@@ -279,6 +279,8 @@ struct GC
 
     __gshared Config config;
 
+
+    //Initialize our gc based on what was configured via the command line.
     void initialize()
     {
         config.initialize();
@@ -338,6 +340,9 @@ struct GC
         runLocked!(go, otherTime, numOthers)(gcx);
     }
 
+    /**
+     * Run a function around a lock/unlock set.
+     */
     auto runLocked(alias func, Args...)(auto ref Args args)
     {
         debug(PROFILE_API) immutable tm = (GC.config.profile > 1 ? currTime.ticks : 0);
@@ -358,6 +363,10 @@ struct GC
             return res;
     }
 
+    /**
+     * Run a function around a lock/unlock set that also counts how often it was 
+     * used and how long it took minus the time spent waiting for the lock.
+     */
     auto runLocked(alias func, alias time, alias count, Args...)(auto ref Args args)
     {
         debug(PROFILE_API) immutable tm = (GC.config.profile > 1 ? currTime.ticks : 0);
@@ -384,7 +393,8 @@ struct GC
     }
 
     /**
-     *
+     * Returns a bit field representing all block attributes set for the memory
+     * referenced by p.
      */
     uint getAttr(void* p) nothrow
     {
@@ -413,7 +423,10 @@ struct GC
 
 
     /**
+     * Sets the specified bits for the memory references by p.
      *
+     * Returns the result of a call to getAttr after the specified bits have been
+     * set.
      */
     uint setAttr(void* p, uint mask) nothrow
     {
@@ -434,6 +447,11 @@ struct GC
 
                 oldb = pool.getBits(biti);
                 pool.setBits(biti, mask);
+
+                //Based on the documetnation, shouldn't the above two lines actually be:
+                //pool.setBits(biti, mask);
+                //oldb = pool.getBits(biti);
+
             }
             return oldb;
         }
@@ -443,7 +461,10 @@ struct GC
 
 
     /**
+     * Clears the specified bits for the memory references by p.
      *
+     * Returns the result of a call to getAttr after the specified bits have been
+     * cleared.
      */
     uint clrAttr(void* p, uint mask) nothrow
     {
@@ -464,6 +485,10 @@ struct GC
 
                 oldb = pool.getBits(biti);
                 pool.clrBits(biti, mask);
+
+                //Based on the documetnation, shouldn't the above two lines actually be:
+                //pool.setBits(biti, mask);
+                //oldb = pool.getBits(biti);
             }
             return oldb;
         }
@@ -472,9 +497,9 @@ struct GC
     }
 
     /**
-     *
+     * Requests an aligned block of managed memory from the garbage collector.
      */
-    void *malloc(size_t size, uint bits = 0, size_t *alloc_size = null, const TypeInfo ti = null) nothrow
+    void* malloc(size_t size, uint bits = 0, size_t* alloc_size = null, const TypeInfo ti = null) nothrow
     {
         if (!size)
         {
@@ -498,9 +523,9 @@ struct GC
 
 
     //
+    // The implementation of malloc. Also used for calloc.
     //
-    //
-    private void *mallocNoSync(size_t size, uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
+    private void* mallocNoSync(size_t size, uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
     {
         assert(size != 0);
 
@@ -525,9 +550,10 @@ struct GC
 
 
     /**
-     *
+     * Requests an aligned block of managed memory from the garbage collector,
+     * which is initialized with all bits set to zero.
      */
-    void *calloc(size_t size, uint bits = 0, size_t *alloc_size = null, const TypeInfo ti = null) nothrow
+    void* calloc(size_t size, uint bits = 0, size_t* alloc_size = null, const TypeInfo ti = null) nothrow
     {
         if (!size)
         {
@@ -551,9 +577,13 @@ struct GC
     }
 
     /**
-     *
+     * A new memory block of size sz will be allocated as if by a call to 
+     * malloc, or the implementation may instead resize the memory block 
+     * in place.  The contents of the new memory block will be the same 
+     * as the contents of the old memory block, up to the lesser of the 
+     * new and old sizes.
      */
-    void *realloc(void *p, size_t size, uint bits = 0, size_t *alloc_size = null, const TypeInfo ti = null) nothrow
+    void* realloc(void* p, size_t size, uint bits = 0, size_t* alloc_size = null, const TypeInfo ti = null) nothrow
     {
         size_t localAllocSize = void;
         auto oldp = p;
@@ -571,9 +601,11 @@ struct GC
 
 
     //
-    // bits will be set to the resulting bits of the new block
+    // The implementation of realloc.
     //
-    private void *reallocNoSync(void *p, size_t size, ref uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
+    // Bits will be set to the resulting bits of the new block
+    //
+    private void* reallocNoSync(void* p, size_t size, ref uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
     {
         if (!size)
         {   if (p)
@@ -587,7 +619,7 @@ struct GC
             p = mallocNoSync(size, bits, alloc_size, ti);
         }
         else
-        {   void *p2;
+        {   void* p2;
             size_t psize;
 
             //debug(PRINTF) printf("GC::realloc(p = %p, size = %zu)\n", p, size);
@@ -727,7 +759,7 @@ struct GC
 
 
     //
-    //
+    // Implementation of extend.
     //
     private size_t extendNoSync(void* p, size_t minsize, size_t maxsize, const TypeInfo ti = null) nothrow
     in
@@ -783,7 +815,8 @@ struct GC
 
 
     /**
-     *
+     * Requests that at least sz bytes of memory be obtained from the operating
+     * system and marked as free.
      */
     size_t reserve(size_t size) nothrow
     {
@@ -797,7 +830,7 @@ struct GC
 
 
     //
-    //
+    // Implementation of reserve
     //
     private size_t reserveNoSync(size_t size) nothrow
     {
@@ -809,7 +842,7 @@ struct GC
 
 
     /**
-     *
+     * Deallocates the memory referenced by p.  If p is null, no action occurs.
      */
     void free(void *p) nothrow
     {
@@ -823,7 +856,7 @@ struct GC
 
 
     //
-    //
+    // Implementation of free.
     //
     private void freeNoSync(void *p) nothrow
     {
@@ -872,7 +905,7 @@ struct GC
         }
         else
         {   // Add to free list
-            List *list = cast(List*)p;
+            List* list = cast(List*)p;
 
             debug (MEMSTOMP) memset(p, 0xF2, binsize[bin]);
 
@@ -889,7 +922,7 @@ struct GC
      * Determine the base address of the block containing p.  If p is not a gc
      * allocated pointer, return null.
      */
-    void* addrOf(void *p) nothrow
+    void* addrOf(void* p) nothrow
     {
         if (!p)
         {
@@ -901,9 +934,9 @@ struct GC
 
 
     //
+    // Implementation of addrOf.
     //
-    //
-    void* addrOfNoSync(void *p) nothrow
+    void* addrOfNoSync(void* p) nothrow
     {
         if (!p)
         {
@@ -921,7 +954,7 @@ struct GC
      * Determine the allocated size of pointer p.  If p is an interior pointer
      * or not a gc allocated pointer, return 0.
      */
-    size_t sizeOf(void *p) nothrow
+    size_t sizeOf(void* p) nothrow
     {
         if (!p)
         {
@@ -933,9 +966,9 @@ struct GC
 
 
     //
+    // Implementation of sizeOf.
     //
-    //
-    private size_t sizeOfNoSync(void *p) nothrow
+    private size_t sizeOfNoSync(void* p) nothrow
     {
         assert (p);
 
@@ -971,7 +1004,7 @@ struct GC
      * Determine the base address of the block containing p.  If p is not a gc
      * allocated pointer, return null.
      */
-    BlkInfo query(void *p) nothrow
+    BlkInfo query(void* p) nothrow
     {
         if (!p)
         {
@@ -984,9 +1017,9 @@ struct GC
 
 
     //
+    // Implementation of query.
     //
-    //
-    BlkInfo queryNoSync(void *p) nothrow
+    BlkInfo queryNoSync(void* p) nothrow
     {
         assert(p);
 
@@ -1009,7 +1042,7 @@ struct GC
      *  2) points to the start of an allocated piece of memory
      *  3) is not on a free list
      */
-    void check(void *p) nothrow
+    void check(void* p) nothrow
     {
         if (!p)
         {
@@ -1021,7 +1054,7 @@ struct GC
 
 
     //
-    //
+    // Implementation of check
     //
     private void checkNoSync(void *p) nothrow
     {
@@ -1049,7 +1082,7 @@ struct GC
                 if (bin < B_PAGE)
                 {
                     // Check that p is not on a free list
-                    List *list;
+                    List* list;
 
                     for (list = gcx.bucket[bin]; list; list = list.next)
                     {
@@ -1217,7 +1250,7 @@ struct GC
 
 
     //
-    //
+    // Implementation of getStats.
     //
     private void getStatsNoSync(out GCStats stats) nothrow
     {
@@ -1291,26 +1324,28 @@ enum
 }
 
 
-alias ubyte Bins;
+alias Bins = ubyte;
 
+
+//Freelist?
 
 struct List
 {
-    List *next;
-    Pool *pool;
+    List* next;
+    Pool* pool;
 }
 
 
 struct Range
 {
-    void *pbot;
-    void *ptop;
+    void* pbot;
+    void* ptop;
     alias pbot this; // only consider pbot for relative ordering (opCmp)
 }
 
 struct Root
 {
-    void *proot;
+    void* proot;
     alias proot this;
 }
 
@@ -1356,7 +1391,7 @@ struct Gcx
 
     void initialize()
     {
-        (cast(byte*)&this)[0 .. Gcx.sizeof] = 0;
+        (cast(byte*)&this)[0 .. Gcx.sizeof] = 0; //Is this a way to disable the constructor?
         log_init();
         roots.initialize();
         ranges.initialize();
@@ -1462,9 +1497,9 @@ struct Gcx
 
 
     /**
-     *
+     * Adds an internal root pointing to the GC memory block referenced by p.
      */
-    void addRoot(void *p) nothrow
+    void addRoot(void* p) nothrow
     {
         rootsLock.lock();
         scope (failure) rootsLock.unlock();
@@ -1474,9 +1509,10 @@ struct Gcx
 
 
     /**
-     *
+     * Removes the memory block referenced by p from an internal list of roots
+     * to be scanned during a collection.
      */
-    void removeRoot(void *p) nothrow
+    void removeRoot(void* p) nothrow
     {
         rootsLock.lock();
         scope (failure) rootsLock.unlock();
@@ -1499,7 +1535,8 @@ struct Gcx
 
 
     /**
-     *
+     * Adds $(D p[0 .. sz]) to the list of memory ranges to be scanned for
+     * pointers during a collection.
      */
     void addRange(void *pbot, void *ptop, const TypeInfo ti) nothrow @nogc
     {
@@ -1513,7 +1550,8 @@ struct Gcx
 
 
     /**
-     *
+     * Removes the memory range starting at p from an internal list of ranges
+     * to be scanned during a collection.
      */
     void removeRange(void *pbot) nothrow @nogc
     {
@@ -1545,7 +1583,8 @@ struct Gcx
 
 
     /**
-     *
+     * Runs any finalizer that is located in address range of the
+     * given code segment.
      */
     void runFinalizers(in void[] segment) nothrow
     {
@@ -1579,9 +1618,9 @@ struct Gcx
      * Find base address of block containing pointer p.
      * Returns null if not a gc'd pointer
      */
-    void* findBase(void *p) nothrow
+    void* findBase(void* p) nothrow
     {
-        Pool *pool;
+        Pool* pool;
 
         pool = findPool(p);
         if (pool)
@@ -1618,7 +1657,7 @@ struct Gcx
      * Find size of pointer p.
      * Returns 0 if not a gc'd pointer
      */
-    size_t findSize(void *p) nothrow
+    size_t findSize(void* p) nothrow
     {
         Pool* pool = findPool(p);
         if (pool)
@@ -1627,7 +1666,9 @@ struct Gcx
     }
 
     /**
+     * Get the block info for a block that a pointer resides in.
      *
+     * If p is not a GC managed pointer, return an empty BlkInfo.
      */
     BlkInfo getInfo(void* p) nothrow
     {
@@ -1866,7 +1907,7 @@ struct Gcx
      * Sort it into pooltable[].
      * Return null if failed.
      */
-    Pool *newPool(size_t npages, bool isLargeObject) nothrow
+    Pool* newPool(size_t npages, bool isLargeObject) nothrow
     {
         //debug(PRINTF) printf("************Gcx::newPool(npages = %d)****************\n", npages);
 
@@ -1895,7 +1936,7 @@ struct Gcx
 
         //printf("npages = %d\n", npages);
 
-        auto pool = cast(Pool *)cstdlib.calloc(1, isLargeObject ? LargeObjectPool.sizeof : SmallObjectPool.sizeof);
+        auto pool = cast(Pool*)cstdlib.calloc(1, isLargeObject ? LargeObjectPool.sizeof : SmallObjectPool.sizeof);
         if (pool)
         {
             pool.initialize(npages, isLargeObject);
@@ -2001,7 +2042,7 @@ struct Gcx
     /**
      * Search a range of memory values and mark any pointers into the GC pool.
      */
-    void mark(void *pbot, void *ptop) nothrow
+    void mark(void* pbot, void* ptop) nothrow
     {
         void **p1 = cast(void **)pbot;
         void **p2 = cast(void **)ptop;
@@ -2169,7 +2210,7 @@ struct Gcx
         // Mark each free entry, so it doesn't get scanned
         for (n = 0; n < B_PAGE; n++)
         {
-            for (List *list = bucket[n]; list; list = list.next)
+            for (List* list = bucket[n]; list; list = list.next)
             {
                 pool = list.pool;
                 assert(pool);
@@ -2541,7 +2582,7 @@ struct Gcx
         }
 
 
-        void log_malloc(void *p, size_t size) nothrow
+        void log_malloc(void* p, size_t size) nothrow
         {
             //debug(PRINTF) printf("+log_malloc(p = %p, size = %zd)\n", p, size);
             Log log;
@@ -2560,7 +2601,7 @@ struct Gcx
         }
 
 
-        void log_free(void *p) nothrow
+        void log_free(void* p) nothrow
         {
             //debug(PRINTF) printf("+log_free(%p)\n", p);
             auto i = current.find(p);
@@ -2609,7 +2650,7 @@ struct Gcx
         }
 
 
-        void log_parent(void *p, void *parent) nothrow
+        void log_parent(void* p, void* parent) nothrow
         {
             //debug(PRINTF) printf("+log_parent()\n");
             auto i = current.find(p);
@@ -2637,10 +2678,10 @@ struct Gcx
     else
     {
         void log_init() nothrow { }
-        void log_malloc(void *p, size_t size) nothrow { }
-        void log_free(void *p) nothrow { }
+        void log_malloc(void* p, size_t size) nothrow { }
+        void log_free(void* p) nothrow { }
         void log_collect() nothrow { }
-        void log_parent(void *p, void *parent) nothrow { }
+        void log_parent(void* p, void* parent) nothrow { }
     }
 }
 
@@ -3247,11 +3288,11 @@ struct SmallObjectPool
 
         for (; p < ptop; p += size)
         {
-            (cast(List *)p).next = cast(List *)(p + size);
-            (cast(List *)p).pool = &base;
+            (cast(List* )p).next = cast(List* )(p + size);
+            (cast(List* )p).pool = &base;
         }
-        (cast(List *)p).next = null;
-        (cast(List *)p).pool = &base;
+        (cast(List* )p).next = null;
+        (cast(List* )p).pool = &base;
         return first;
     }
 }
