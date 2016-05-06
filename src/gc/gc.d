@@ -269,7 +269,11 @@ struct GC
     static gcLock = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
     static bool inFinalizer;
 
-    // lock GC, throw InvalidMemoryOperationError on recursive locking during finalization
+    /*
+     * Lock the GC.
+     *
+     * Throws: InvalidMemoryOperationError on recursive locking during finalization.
+     */ 
     static void lockNR() @nogc nothrow
     {
         if (inFinalizer)
@@ -280,7 +284,9 @@ struct GC
     __gshared Config config;
 
 
-    //Initialize our gc based on what was configured via the command line.
+    /*
+     * Initialize the GC based on command line configuration.
+     */
     void initialize()
     {
         config.initialize();
