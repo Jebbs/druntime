@@ -20,12 +20,15 @@ extern extern(C) __gshared bool rt_envvars_enabled;
 extern extern(C) __gshared bool rt_cmdline_enabled;
 extern extern(C) __gshared string[] rt_options;
 
+__gshared Config config;
+
 struct Config
 {
     bool disable;            // start disabled
     ubyte profile;           // enable profiling with summary when terminating program
     bool precise;            // enable precise scanning
     bool concurrent;         // enable concurrent collection
+    bool malloc;             // enable a manual management implementation
 
     size_t initReserve;      // initial reserve (MB)
     size_t minPoolSize = 1;  // initial and minimum pool size (MB)
@@ -63,6 +66,7 @@ struct Config
     profile:0|1|2  - enable profiling with summary when terminating program (%d)
     precise:0|1    - enable precise scanning (not implemented yet)
     concurrent:0|1 - enable concurrent collection (not implemented yet)
+    malloc:0|1     - enable a manual management implementation
 
     initReserve:N  - initial memory to reserve in MB (%lld)
     minPoolSize:N  - initial and minimum pool size in MB (%lld)
