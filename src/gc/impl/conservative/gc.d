@@ -11,7 +11,7 @@
  *    (See accompanying file LICENSE or copy at
  *          http://www.boost.org/LICENSE_1_0.txt)
  */
-module gc.gc;
+module gc.impl.conservative.gc;
 
 // D Programming Language Garbage Collector implementation
 
@@ -277,11 +277,9 @@ struct GC
         gcLock.lock();
     }
 
-    __gshared Config config;
-
     void initialize()
     {
-        config.initialize();
+        //config is assumed to have already been initialized
 
         gcx = cast(Gcx*)cstdlib.calloc(1, Gcx.sizeof);
         if (!gcx)
@@ -340,17 +338,17 @@ struct GC
 
     auto runLocked(alias func, Args...)(auto ref Args args)
     {
-        debug(PROFILE_API) immutable tm = (GC.config.profile > 1 ? currTime.ticks : 0);
+        debug(PROFILE_API) immutable tm = (config.profile > 1 ? currTime.ticks : 0);
         lockNR();
         scope (failure) gcLock.unlock();
-        debug(PROFILE_API) immutable tm2 = (GC.config.profile > 1 ? currTime.ticks : 0);
+        debug(PROFILE_API) immutable tm2 = (config.profile > 1 ? currTime.ticks : 0);
 
         static if (is(typeof(func(args)) == void))
             func(args);
         else
             auto res = func(args);
 
-        debug(PROFILE_API) if (GC.config.profile > 1)
+        debug(PROFILE_API) if (config.profile > 1)
             lockTime += tm2 - tm;
         gcLock.unlock();
 
@@ -360,17 +358,17 @@ struct GC
 
     auto runLocked(alias func, alias time, alias count, Args...)(auto ref Args args)
     {
-        debug(PROFILE_API) immutable tm = (GC.config.profile > 1 ? currTime.ticks : 0);
+        debug(PROFILE_API) immutable tm = (config.profile > 1 ? currTime.ticks : 0);
         lockNR();
         scope (failure) gcLock.unlock();
-        debug(PROFILE_API) immutable tm2 = (GC.config.profile > 1 ? currTime.ticks : 0);
+        debug(PROFILE_API) immutable tm2 = (config.profile > 1 ? currTime.ticks : 0);
 
         static if (is(typeof(func(args)) == void))
             func(args);
         else
             auto res = func(args);
 
-        debug(PROFILE_API) if (GC.config.profile > 1)
+        debug(PROFILE_API) if (config.profile > 1)
         {
             count++;
             immutable now = currTime.ticks;
@@ -1370,7 +1368,7 @@ struct Gcx
 
     void Dtor()
     {
-        if (GC.config.profile)
+        if (config.profile)
         {
             printf("\tNumber of collections:  %llu\n", cast(ulong)numCollections);
             printf("\tTotal GC prep time:  %lld milliseconds\n",
@@ -1389,7 +1387,7 @@ struct Gcx
 
             char[30] apitxt;
             apitxt[0] = 0;
-            debug(PROFILE_API) if (GC.config.profile > 1)
+            debug(PROFILE_API) if (config.profile > 1)
             {
                 static Duration toDuration(long dur)
                 {
@@ -1691,9 +1689,9 @@ struct Gcx
             return max(newVal, decay);
         }
 
-        immutable smTarget = usedSmallPages * GC.config.heapSizeFactor;
+        immutable smTarget = usedSmallPages * config.heapSizeFactor;
         smallCollectThreshold = smoothDecay(smallCollectThreshold, smTarget);
-        immutable lgTarget = usedLargePages * GC.config.heapSizeFactor;
+        immutable lgTarget = usedLargePages * config.heapSizeFactor;
         largeCollectThreshold = smoothDecay(largeCollectThreshold, lgTarget);
     }
 
@@ -1871,7 +1869,7 @@ struct Gcx
         //debug(PRINTF) printf("************Gcx::newPool(npages = %d)****************\n", npages);
 
         // Minimum of POOLSIZE
-        size_t minPages = (GC.config.minPoolSize << 20) / PAGESIZE;
+        size_t minPages = (config.minPoolSize << 20) / PAGESIZE;
         if (npages < minPages)
             npages = minPages;
         else if (npages > minPages)
@@ -1885,9 +1883,9 @@ struct Gcx
         if (npools)
         {   size_t n;
 
-            n = GC.config.minPoolSize + GC.config.incPoolSize * npools;
-            if (n > GC.config.maxPoolSize)
-                n = GC.config.maxPoolSize;                 // cap pool size
+            n = config.minPoolSize + config.incPoolSize * npools;
+            if (n > config.maxPoolSize)
+                n = config.maxPoolSize;                 // cap pool size
             n *= (1 << 20) / PAGESIZE;                     // convert MB to pages
             if (npages < n)
                 npages = n;
@@ -1909,7 +1907,7 @@ struct Gcx
 
         mappedPages += npages;
 
-        if (GC.config.profile)
+        if (config.profile)
         {
             if (mappedPages * PAGESIZE > maxPoolMemory)
                 maxPoolMemory = mappedPages * PAGESIZE;
@@ -2413,7 +2411,7 @@ struct Gcx
     {
         MonoTime start, stop, begin;
 
-        if (GC.config.profile)
+        if (config.profile)
         {
             begin = start = currTime;
         }
@@ -2434,7 +2432,7 @@ struct Gcx
 
             prepare();
 
-            if (GC.config.profile)
+            if (config.profile)
             {
                 stop = currTime;
                 prepTime += (stop - start);
@@ -2447,7 +2445,7 @@ struct Gcx
             thread_resumeAll();
         }
 
-        if (GC.config.profile)
+        if (config.profile)
         {
             stop = currTime;
             markTime += (stop - start);
@@ -2465,7 +2463,7 @@ struct Gcx
             GC.inFinalizer = false;
         }
 
-        if (GC.config.profile)
+        if (config.profile)
         {
             stop = currTime;
             sweepTime += (stop - start);
@@ -2474,7 +2472,7 @@ struct Gcx
 
         immutable freedSmallPages = recover();
 
-        if (GC.config.profile)
+        if (config.profile)
         {
             stop = currTime;
             recoverTime += (stop - start);
