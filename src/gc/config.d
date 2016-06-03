@@ -26,9 +26,7 @@ struct Config
 {
     bool disable;            // start disabled
     ubyte profile;           // enable profiling with summary when terminating program
-    bool precise;            // enable precise scanning
-    bool concurrent;         // enable concurrent collection
-    bool malloc;             // enable a manual management implementation
+    string gc = "conservative"; // select gc implementation conservative|manual
 
     size_t initReserve;      // initial reserve (MB)
     size_t minPoolSize = 1;  // initial and minimum pool size (MB)
@@ -64,9 +62,7 @@ struct Config
         string s = "GC options are specified as white space separated assignments:
     disable:0|1    - start disabled (%d)
     profile:0|1|2  - enable profiling with summary when terminating program (%d)
-    precise:0|1    - enable precise scanning (not implemented yet)
-    concurrent:0|1 - enable concurrent collection (not implemented yet)
-    malloc:0|1     - enable a manual management implementation
+    gc:conservative|manual - select gc implementation (default = conservative)
 
     initReserve:N  - initial memory to reserve in MB (%lld)
     minPoolSize:N  - initial and minimum pool size in MB (%lld)
@@ -188,6 +184,47 @@ body
         return parseError("a float", optname, str);
     str = str[nscanned .. $];
     return true;
+}
+
+bool parse(T:const(char)[])(const(char)[] optname, ref const(char)[] str, ref T res)
+in { assert(str.length); }
+body
+{
+
+    int start;
+    int nscanned;
+
+    for(;start<str.length; start++)
+    {
+        if(!isspace(str[start]))
+            break;
+    }
+
+    for(nscanned=start; nscanned<str.length; nscanned++)
+    {
+        if(isspace(str[nscanned]))
+            break;
+    }
+
+    switch(str[start .. nscanned])
+    {
+        case "manual":
+        {
+            res = "manual";
+            str = str[nscanned .. $];
+            return true;
+        }
+        case "conservative":
+        {
+            res = "conservative";
+            str = str[nscanned .. $];
+            return true;
+        }
+        default:
+        {
+            return parseError("conservative or manual", optname, str);
+        }
+    }
 }
 
 bool parseError(in char[] exp, in char[] opt, in char[] got)

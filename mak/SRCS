@@ -242,7 +242,7 @@ SRCS=\
 	src\gc\proxy.d \
 	src\gc\stats.d \
 	src\gc\impl\conservative\gc.d \
-	src\gc\impl\malloc\gc.d \
+	src\gc\impl\manual\gc.d \
 	\
 	src\rt\aApply.d \
 	src\rt\aApplyR.d \

@@ -42,6 +42,7 @@ import gc.bits;
 import gc.stats;
 import gc.os;
 import gc.config;
+import gc.proxy;
 
 import rt.util.container.treap;
 
@@ -255,6 +256,9 @@ debug (LOGGING)
 const uint GCVERSION = 1;       // increment every time we change interface
                                 // to GC.
 
+__gshared GC gcInstance;
+__gshared Proxy  pthis;
+
 struct GC
 {
     // For passing to debug code (not thread safe)
@@ -281,6 +285,9 @@ struct GC
     {
         //config is assumed to have already been initialized
 
+        if(config.gc != "conservative")
+            return;
+
         gcx = cast(Gcx*)cstdlib.calloc(1, Gcx.sizeof);
         if (!gcx)
             onOutOfMemoryErrorNoGC();
@@ -290,6 +297,70 @@ struct GC
             gcx.reserve(config.initReserve << 20);
         if (config.disable)
             gcx.disabled++;
+
+        initProxy();
+        gc_setProxy(&pthis);
+
+    }
+
+    private void initProxy()
+    {
+        pthis.gc_enable = function void() { gcInstance.enable();};
+        pthis.gc_disable = function void() { gcInstance.disable();};
+        pthis.gc_term = function void() {
+        gcInstance.fullCollectNoStack(); // not really a 'collect all' -- still scans
+                                  // static data area, roots, and ranges.
+        gcInstance.Dtor();
+        };
+
+        pthis.gc_collect = function void() { gcInstance.fullCollect();};
+        pthis.gc_minimize = function void() { gcInstance.minimize();};
+
+        pthis.gc_getAttr = function uint(void* p) { return gcInstance.getAttr(p);};
+        pthis.gc_setAttr = function uint(void* p, uint a) { return gcInstance.setAttr(p, a);};
+        pthis.gc_clrAttr = function uint(void* p, uint a) { return gcInstance.clrAttr(p, a);};
+
+        pthis.gc_malloc = function void*(size_t sz, uint ba, const TypeInfo ti) { return gcInstance.malloc( sz, ba, null, ti );};
+        pthis.gc_qalloc = function BlkInfo(size_t sz, uint ba, const TypeInfo ti) {
+            BlkInfo retval;
+            retval.base = gcInstance.malloc( sz, ba, &retval.size, ti );
+            retval.attr = ba;
+            return retval;};
+        pthis.gc_calloc = function void*(size_t sz, uint ba, const TypeInfo ti) { return gcInstance.calloc( sz, ba, null, ti );};
+        pthis.gc_realloc = function void*(void* p, size_t sz, uint ba, const TypeInfo ti) { return gcInstance.realloc( p, sz, ba, null, ti );};
+        pthis.gc_extend = function size_t(void* p, size_t mx, size_t sz, const TypeInfo ti) { return gcInstance.extend( p, mx, sz, ti );};
+        pthis.gc_reserve = function size_t(size_t sz) { return gcInstance.reserve(sz);};
+        pthis.gc_free = function void(void* p){ gcInstance.free(p);};
+
+        pthis.gc_addrOf = function void*(void* p) { return gcInstance.addrOf(p);};
+        pthis.gc_sizeOf = function size_t(void* p) { return gcInstance.sizeOf(p);};
+
+        pthis.gc_query = function BlkInfo(void* p) { return gcInstance.query(p);};
+        pthis.gc_stats = function GCStats() {GCStats stats = void; gcInstance.getStats( stats ); return stats;};
+
+        pthis.gc_addRoot = function void(void* p) { gcInstance.addRoot(p);};
+        pthis.gc_addRange = function void(void* p, size_t sz, const TypeInfo ti) { gcInstance.addRange( p, sz, ti );};
+
+        pthis.gc_removeRoot = function void(void* p) { gcInstance.removeRoot(p);};
+        pthis.gc_removeRange = function void(void*p) { gcInstance.removeRange(p);};
+        pthis.gc_runFinalizers = function void(in void[] segment) { gcInstance.runFinalizers(segment);};
+
+        pthis.gc_inFinalizer = function bool() { return gcInstance.inFinalizer;};
+
+        pthis.gc_setProxy = function void(Proxy* p) {
+            foreach (r; gcInstance.rootIter)
+                p.gc_addRoot( r );
+
+            foreach (r; gcInstance.rangeIter)
+                p.gc_addRange( r.pbot, r.ptop - r.pbot, null );
+        };
+        pthis.gc_clrProxy= function void(Proxy* p){
+            foreach (r; gcInstance.rootIter)
+                p.gc_removeRoot( r );
+
+            foreach (r; gcInstance.rangeIter)
+                p.gc_removeRange( r.pbot);
+        };
     }
 
 
