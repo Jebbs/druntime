@@ -407,7 +407,7 @@ struct ITEMIDLIST {
 alias ITEMIDLIST*        LPITEMIDLIST;
 alias const(ITEMIDLIST)* LPCITEMIDLIST;
 
-extern (Windows) alias int function(HWND, UINT, LPARAM, LPARAM) BFFCALLBACK;
+alias int function(HWND, UINT, LPARAM, LPARAM) BFFCALLBACK;
 
 struct BROWSEINFOA {
     HWND          hwndOwner;
@@ -683,7 +683,7 @@ interface IObjMgr : IUnknown {
 interface IContextMenu : IUnknown {
     HRESULT QueryContextMenu(HMENU, UINT, UINT, UINT, UINT);
     HRESULT InvokeCommand(LPCMINVOKECOMMANDINFO);
-    HRESULT GetCommandString(UINT_PTR, UINT, PUINT, LPSTR, UINT);
+    HRESULT GetCommandString(UINT, UINT, PUINT, LPSTR, UINT);
 }
 alias IContextMenu LPCONTEXTMENU;
 

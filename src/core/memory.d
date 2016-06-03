@@ -126,6 +126,7 @@ private
     extern (C) size_t   gc_extend( void* p, size_t mx, size_t sz, const TypeInfo = null ) pure nothrow;
     extern (C) size_t   gc_reserve( size_t sz ) nothrow;
     extern (C) void     gc_free( void* p ) pure nothrow;
+    extern (C) bool     gc_emplace( void *p, size_t len, const TypeInfo ti ) pure nothrow;
 
     extern (C) void*   gc_addrOf( void* p ) pure nothrow;
     extern (C) size_t  gc_sizeOf( void* p ) pure nothrow;
@@ -139,10 +140,10 @@ private
 
     extern (C) BlkInfo_ gc_query( void* p ) pure nothrow;
 
-    extern (C) void gc_addRoot( in void* p ) nothrow @nogc;
+    extern (C) void gc_addRoot( in void* p ) nothrow;
     extern (C) void gc_addRange( in void* p, size_t sz, const TypeInfo ti = null ) nothrow @nogc;
 
-    extern (C) void gc_removeRoot( in void* p ) nothrow @nogc;
+    extern (C) void gc_removeRoot( in void* p ) nothrow;
     extern (C) void gc_removeRange( in void* p ) nothrow @nogc;
     extern (C) void gc_runFinalizers( in void[] segment );
 
@@ -248,6 +249,10 @@ struct GC
         NO_INTERIOR = 0b0001_0000,
 
         STRUCTFINAL = 0b0010_0000, // the block has a finalizer for (an array of) structs
+
+        // additional info for allocating with type info
+        NO_RTINFO   = 0b0100_0000, // do not copy RTInfo in malloc/realloc
+        REP_RTINFO  = 0b1000_0000, // repeat RTInfo if allocation is larger than type info
     }
 
 
@@ -659,6 +664,22 @@ struct GC
         return gc_query( p );
     }
 
+    /**
+    * Describe the memory at the given address range for precise collection
+    *
+    * Params:
+    *  p = A pointer to the root or the interior of a valid memory block
+    *  len = Length of the memory range
+    *  ti = Type info describing the memory usage
+    *
+    * Returns:
+    *  true if p points to GC managed memory
+    */
+    static bool emplace( void *p, size_t len, const TypeInfo ti ) pure nothrow
+    {
+        return gc_emplace( p, len, ti );
+    }
+
 
     /**
      * Adds an internal root pointing to the GC memory block referenced by p.
@@ -705,7 +726,7 @@ struct GC
      * }
      * ---
      */
-    static void addRoot( in void* p ) nothrow @nogc /* FIXME pure */
+    static void addRoot( in void* p ) nothrow /* FIXME pure */
     {
         gc_addRoot( p );
     }
@@ -719,7 +740,7 @@ struct GC
      * Params:
      *  p = A pointer into a GC-managed memory block or null.
      */
-    static void removeRoot( in void* p ) nothrow @nogc /* FIXME pure */
+    static void removeRoot( in void* p ) nothrow /* FIXME pure */
     {
         gc_removeRoot( p );
     }

@@ -13,16 +13,7 @@ public import core.sys.posix.sys.time;
 public import core.sys.posix.sys.types: id_t;
 import core.sys.posix.config;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
-nothrow @nogc extern(C):
+nothrow extern(C):
 
 //
 // XOpen (XSI)
@@ -143,7 +134,7 @@ version (CRuntime_Glibc)
         RLIMIT_AS     = 9,
     }
 }
-else version (Darwin)
+else version (OSX)
 {
     enum
     {
@@ -375,7 +366,7 @@ else version (Solaris)
     int getpriority(int, id_t);
     int setpriority(int, id_t, int);
 }
-else version (Darwin)
+else version (OSX)
 {
     int getpriority(int, id_t);
     int setpriority(int, id_t, int);
@@ -403,7 +394,7 @@ else version (CRuntime_Bionic)
     int getrusage(int, rusage*);
     int setrlimit(int, in rlimit*);
 }
-else version (Darwin)
+else version (OSX)
 {
     int getrlimit(int, rlimit*);
     int getrusage(int, rusage*);

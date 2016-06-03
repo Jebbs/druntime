@@ -16,15 +16,6 @@ module core.sys.posix.poll;
 
 private import core.sys.posix.config;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -84,7 +75,7 @@ version( CRuntime_Glibc )
 
     int poll(pollfd*, nfds_t, int);
 }
-else version( Darwin )
+else version( OSX )
 {
     struct pollfd
     {

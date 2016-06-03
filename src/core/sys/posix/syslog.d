@@ -15,15 +15,6 @@
  */
 module core.sys.posix.syslog;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 
 extern (C) nothrow @nogc:
@@ -88,7 +79,7 @@ version(CRuntime_Glibc)
     void syslog (int __pri, const char *__fmt, ...);
     void closelog();
 }
-else version( Darwin )
+else version( OSX )
 {
     //http://www.opensource.apple.com/source/xnu/xnu-1456.1.26/osfmk/sys/syslog.h
 

@@ -17,15 +17,6 @@ module core.stdc.time;
 
 private import core.stdc.config;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 extern (C):
 @trusted: // There are only a few functions here that use unsafe C strings.
 nothrow:
@@ -87,10 +78,6 @@ else version( OSX )
 {
     enum clock_t CLOCKS_PER_SEC = 100;
 }
-else version( Darwin ) // other Darwins (iOS, TVOS, WatchOS)
-{
-    enum clock_t CLOCKS_PER_SEC = 1_000_000;
-}
 else version( FreeBSD )
 {
     enum clock_t CLOCKS_PER_SEC = 128;
@@ -137,7 +124,7 @@ version( Windows )
     ///
     extern __gshared const(char)*[2] tzname; // non-standard
 }
-else version( Darwin )
+else version( OSX )
 {
     ///
     void tzset();                            // non-standard

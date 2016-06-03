@@ -14,15 +14,6 @@ module rt.alloca;
 version (Posix)
 {
     version = alloca;
-
-    version (OSX)
-        version = Darwin;
-    else version (iOS)
-        version = Darwin;
-    else version (TVOS)
-        version = Darwin;
-    else version (WatchOS)
-        version = Darwin;
 }
 else version (CRuntime_Microsoft)
 {
@@ -69,7 +60,7 @@ extern (C) void* __alloca(int nbytes)
         push    ESI             ;
     }
 
-    version (Darwin)
+    version (OSX)
     {
     asm
     {

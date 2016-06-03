@@ -20,13 +20,12 @@ extern extern(C) __gshared bool rt_envvars_enabled;
 extern extern(C) __gshared bool rt_cmdline_enabled;
 extern extern(C) __gshared string[] rt_options;
 
-__gshared Config config;
-
 struct Config
 {
     bool disable;            // start disabled
     ubyte profile;           // enable profiling with summary when terminating program
-    string gc = "conservative"; // select gc implementation conservative|manual
+    bool precise = 1;        // enable precise scanning
+    bool concurrent;         // enable concurrent collection
 
     size_t initReserve;      // initial reserve (MB)
     size_t minPoolSize = 1;  // initial and minimum pool size (MB)
@@ -62,7 +61,8 @@ struct Config
         string s = "GC options are specified as white space separated assignments:
     disable:0|1    - start disabled (%d)
     profile:0|1|2  - enable profiling with summary when terminating program (%d)
-    gc:conservative|manual - select gc implementation (default = conservative)
+    precise:0|1    - enable precise heap scanning (%d)
+    concurrent:0|1 - enable concurrent collection (not implemented yet)
 
     initReserve:N  - initial memory to reserve in MB (%lld)
     minPoolSize:N  - initial and minimum pool size in MB (%lld)
@@ -70,7 +70,7 @@ struct Config
     incPoolSize:N  - pool size increment MB (%lld)
     heapSizeFactor:N - targeted heap size to used memory ratio (%g)
 ";
-        printf(s.ptr, disable, profile, cast(long)initReserve, cast(long)minPoolSize,
+        printf(s.ptr, disable, profile, precise, cast(long)initReserve, cast(long)minPoolSize,
                cast(long)maxPoolSize, cast(long)incPoolSize, heapSizeFactor);
     }
 
@@ -184,47 +184,6 @@ body
         return parseError("a float", optname, str);
     str = str[nscanned .. $];
     return true;
-}
-
-bool parse(T:const(char)[])(const(char)[] optname, ref const(char)[] str, ref T res)
-in { assert(str.length); }
-body
-{
-
-    int start;
-    int nscanned;
-
-    for(;start<str.length; start++)
-    {
-        if(!isspace(str[start]))
-            break;
-    }
-
-    for(nscanned=start; nscanned<str.length; nscanned++)
-    {
-        if(isspace(str[nscanned]))
-            break;
-    }
-
-    switch(str[start .. nscanned])
-    {
-        case "manual":
-        {
-            res = "manual";
-            str = str[nscanned .. $];
-            return true;
-        }
-        case "conservative":
-        {
-            res = "conservative";
-            str = str[nscanned .. $];
-            return true;
-        }
-        default:
-        {
-            return parseError("conservative or manual", optname, str);
-        }
-    }
 }
 
 bool parseError(in char[] exp, in char[] opt, in char[] got)

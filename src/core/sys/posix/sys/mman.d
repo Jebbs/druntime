@@ -17,15 +17,6 @@ module core.sys.posix.sys.mman;
 private import core.sys.posix.config;
 public import core.sys.posix.sys.types; // for off_t, mode_t
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C) nothrow @nogc:
 
@@ -67,7 +58,7 @@ version( CRuntime_Glibc )
         int posix_madvise(void *__addr, size_t __len, int __advice);
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum POSIX_MADV_NORMAL      = 0;
     enum POSIX_MADV_RANDOM      = 1;
@@ -113,7 +104,7 @@ version( CRuntime_Glibc )
     enum PROT_WRITE     = 0x2;
     enum PROT_EXEC      = 0x4;
 }
-else version( Darwin )
+else version( OSX )
 {
     enum PROT_NONE      = 0x00;
     enum PROT_READ      = 0x01;
@@ -163,7 +154,7 @@ version( CRuntime_Glibc )
         void* mmap(void*, size_t, int, int, int, off_t);
     int munmap(void*, size_t);
 }
-else version( Darwin )
+else version( OSX )
 {
     void* mmap(void*, size_t, int, int, int, off_t);
     int   munmap(void*, size_t);
@@ -297,7 +288,7 @@ version( CRuntime_Glibc )
 
     int msync(void*, size_t, int);
 }
-else version( Darwin )
+else version( OSX )
 {
     enum MAP_SHARED     = 0x0001;
     enum MAP_PRIVATE    = 0x0002;
@@ -422,7 +413,7 @@ version( CRuntime_Glibc )
     int munlockall();
 
 }
-else version( Darwin )
+else version( OSX )
 {
     enum MCL_CURRENT    = 0x0001;
     enum MCL_FUTURE     = 0x0002;
@@ -472,7 +463,7 @@ version( CRuntime_Glibc )
     int mlock(in void*, size_t);
     int munlock(in void*, size_t);
 }
-else version( Darwin )
+else version( OSX )
 {
     int mlock(in void*, size_t);
     int munlock(in void*, size_t);
@@ -508,7 +499,7 @@ version (CRuntime_Glibc)
 {
     int mprotect(void*, size_t, int);
 }
-else version( Darwin )
+else version( OSX )
 {
     int mprotect(void*, size_t, int);
 }
@@ -542,7 +533,7 @@ version( CRuntime_Glibc )
     int shm_open(in char*, int, mode_t);
     int shm_unlink(in char*);
 }
-else version( Darwin )
+else version( OSX )
 {
     int shm_open(in char*, int, mode_t);
     int shm_unlink(in char*);

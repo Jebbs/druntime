@@ -331,7 +331,7 @@ struct PARAMDESC {
 alias PARAMDESC* LPPARAMDESC;
 
 struct IDLDESC {
-    ULONG_PTR dwReserved;
+    ULONG dwReserved;
     USHORT wIDLFlags;
 }
 alias IDLDESC* LPIDLDESC;

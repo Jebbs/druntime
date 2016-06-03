@@ -241,7 +241,6 @@ struct dll_aux
     }
 
     // the following structures can be found here: http://undocumented.ntinternals.net/
-    // perhaps this should be same as LDR_DATA_TABLE_ENTRY, which is introduced with PEB_LDR_DATA
     struct LDR_MODULE
     {
         LIST_ENTRY      InLoadOrderModuleList;
@@ -249,7 +248,7 @@ struct dll_aux
         LIST_ENTRY      InInitializationOrderModuleList;
         PVOID           BaseAddress;
         PVOID           EntryPoint;
-        SIZE_T          SizeOfImage;
+        ULONG           SizeOfImage;
         UNICODE_STRING  FullDllName;
         UNICODE_STRING  BaseDllName;
         ULONG           Flags;

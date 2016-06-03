@@ -16,14 +16,6 @@ module core.runtime;
 
 version (Windows) import core.stdc.wchar_ : wchar_t;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
 
 /// C interface for Runtime.loadLibrary
 extern (C) void* rt_loadLibrary(const char* name);
@@ -411,8 +403,8 @@ extern (C) bool runModuleUnitTests()
     // backtrace
     version( CRuntime_Glibc )
         import core.sys.linux.execinfo;
-    else version( Darwin )
-        import core.sys.darwin.execinfo;
+    else version( OSX )
+        import core.sys.osx.execinfo;
     else version( FreeBSD )
         import core.sys.freebsd.execinfo;
     else version( Windows )
@@ -493,8 +485,8 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
     // backtrace
     version( CRuntime_Glibc )
         import core.sys.linux.execinfo;
-    else version( Darwin )
-        import core.sys.darwin.execinfo;
+    else version( OSX )
+        import core.sys.osx.execinfo;
     else version( FreeBSD )
         import core.sys.freebsd.execinfo;
     else version( Windows )
@@ -644,7 +636,7 @@ Throwable.TraceInfo defaultTraceHandler( void* ptr = null )
             const(char)[] fixline( const(char)[] buf, return ref char[4096] fixbuf ) const
             {
                 size_t symBeg, symEnd;
-                version( Darwin )
+                version( OSX )
                 {
                     // format is:
                     //  1  module    0x00000000 D6module4funcAFZv + 0

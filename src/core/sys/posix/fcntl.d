@@ -19,15 +19,6 @@ private import core.stdc.stdint;
 public import core.sys.posix.sys.types; // for off_t, mode_t
 public import core.sys.posix.sys.stat;  // for S_IFMT, etc.
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 
@@ -267,11 +258,8 @@ version( CRuntime_Glibc )
         int   creat(in char*, mode_t);
         int   open(in char*, int, ...);
     }
-
-    enum AT_SYMLINK_NOFOLLOW = 0x100;
-    enum AT_FDCWD = -100;
 }
-else version( Darwin )
+else version( OSX )
 {
     enum F_DUPFD        = 0;
     enum F_GETFD        = 1;
@@ -378,9 +366,6 @@ else version( FreeBSD )
 
     int creat(in char*, mode_t);
     int open(in char*, int, ...);
-
-    enum AT_SYMLINK_NOFOLLOW = 0x200;
-    enum AT_FDCWD = -100;
 }
 else version (Solaris)
 {

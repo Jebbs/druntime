@@ -18,25 +18,16 @@ module core.sync.semaphore;
 public import core.sync.exception;
 public import core.time;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version( Windows )
 {
     private import core.sys.windows.windows;
 }
-else version( Darwin )
+else version( OSX )
 {
     private import core.sync.config;
     private import core.stdc.errno;
     private import core.sys.posix.time;
-    private import core.sys.darwin.mach.semaphore;
+    private import core.sys.osx.mach.semaphore;
 }
 else version( Posix )
 {
@@ -90,7 +81,7 @@ class Semaphore
             if( m_hndl == m_hndl.init )
                 throw new SyncError( "Unable to create semaphore" );
         }
-        else version( Darwin )
+        else version( OSX )
         {
             auto rc = semaphore_create( mach_task_self(), &m_hndl, SYNC_POLICY_FIFO, count );
             if( rc )
@@ -112,7 +103,7 @@ class Semaphore
             BOOL rc = CloseHandle( m_hndl );
             assert( rc, "Unable to destroy semaphore" );
         }
-        else version( Darwin )
+        else version( OSX )
         {
             auto rc = semaphore_destroy( mach_task_self(), m_hndl );
             assert( !rc, "Unable to destroy semaphore" );
@@ -145,7 +136,7 @@ class Semaphore
             if( rc != WAIT_OBJECT_0 )
                 throw new SyncError( "Unable to wait for semaphore" );
         }
-        else version( Darwin )
+        else version( OSX )
         {
             while( true )
             {
@@ -224,7 +215,7 @@ class Semaphore
                 throw new SyncError( "Unable to wait for semaphore" );
             }
         }
-        else version( Darwin )
+        else version( OSX )
         {
             mach_timespec_t t = void;
             (cast(byte*) &t)[0 .. t.sizeof] = 0;
@@ -279,7 +270,7 @@ class Semaphore
             if( !ReleaseSemaphore( m_hndl, 1, null ) )
                 throw new SyncError( "Unable to notify semaphore" );
         }
-        else version( Darwin )
+        else version( OSX )
         {
             auto rc = semaphore_signal( m_hndl );
             if( rc )
@@ -318,7 +309,7 @@ class Semaphore
                 throw new SyncError( "Unable to wait for semaphore" );
             }
         }
-        else version( Darwin )
+        else version( OSX )
         {
             return wait( dur!"hnsecs"(0) );
         }
@@ -342,7 +333,7 @@ private:
     {
         HANDLE  m_hndl;
     }
-    else version( Darwin )
+    else version( OSX )
     {
         semaphore_t m_hndl;
     }

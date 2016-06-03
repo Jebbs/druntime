@@ -19,15 +19,6 @@ version (Posix)
 
 version (Win64_Posix):
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 //debug=PRINTF;
 debug(PRINTF) import core.stdc.stdio : printf;
 
@@ -425,7 +416,7 @@ extern (C) void _d_throwc(Object h)
                 inflight.t    = cast(Throwable) h;
                 __inflight    = &inflight;
 
-                version (Darwin)
+                version (OSX)
                 {
                     version (D_InlineAsm_X86)
                         asm

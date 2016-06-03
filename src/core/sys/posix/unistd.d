@@ -19,15 +19,6 @@ private import core.stdc.stddef;
 public import core.sys.posix.inttypes;  // for intptr_t
 public import core.sys.posix.sys.types; // for ssize_t, uid_t, gid_t, off_t, pid_t, useconds_t
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -152,7 +143,7 @@ else version( Solaris )
         }
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     off_t lseek(int, off_t, int) @trusted;
     int   ftruncate(int, off_t) @trusted;
@@ -478,7 +469,7 @@ version( CRuntime_Glibc )
         _SC_RAW_SOCKETS
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum F_OK       = 0;
     enum R_OK       = 4;
@@ -1107,7 +1098,7 @@ version( CRuntime_Glibc )
 {
     int fsync(int) @trusted;
 }
-else version( Darwin )
+else version( OSX )
 {
     int fsync(int) @trusted;
 }
@@ -1219,7 +1210,7 @@ version( CRuntime_Glibc )
     int        truncate(in char*, off_t);
   }
 }
-else version( Darwin )
+else version( OSX )
 {
     char*      crypt(in char*, in char*);
     char*      ctermid(char*);

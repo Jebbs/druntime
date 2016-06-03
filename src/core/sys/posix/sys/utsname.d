@@ -1,14 +1,5 @@
 module core.sys.posix.sys.utsname;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern(C):
 
@@ -30,7 +21,7 @@ version(CRuntime_Glibc)
 
     int uname(utsname* __name);
 }
-else version(Darwin)
+else version(OSX)
 {
     private enum utsNameLength = 256;
 
@@ -58,22 +49,6 @@ else version(FreeBSD)
         // The field name is version but version is a keyword in D.
         char[utsNameLength] update;
         char[utsNameLength] machine;
-    }
-
-    int uname(utsname* __name);
-}
-else version(Solaris)
-{
-    private enum SYS_NMLN = 257;
-
-    struct utsname
-    {
-        char[SYS_NMLN] sysname;
-        char[SYS_NMLN] nodename;
-        char[SYS_NMLN] release;
-        // The field name is version but version is a keyword in D.
-        char[SYS_NMLN] _version;
-        char[SYS_NMLN] machine;
     }
 
     int uname(utsname* __name);

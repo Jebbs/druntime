@@ -16,15 +16,6 @@ module core.sys.posix.netinet.tcp;
 
 private import core.sys.posix.config;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 
@@ -39,7 +30,7 @@ version( CRuntime_Glibc )
 {
     enum TCP_NODELAY = 1;
 }
-else version( Darwin )
+else version( OSX )
 {
     enum TCP_NODELAY = 1;
 }

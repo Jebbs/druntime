@@ -17,15 +17,6 @@ module core.sys.posix.semaphore;
 private import core.sys.posix.config;
 private import core.sys.posix.time;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -68,7 +59,7 @@ version( CRuntime_Glibc )
 
     enum SEM_FAILED = cast(sem_t*) null;
 }
-else version( Darwin )
+else version( OSX )
 {
     alias int sem_t;
 
@@ -138,7 +129,7 @@ version( CRuntime_Glibc )
 {
     int sem_timedwait(sem_t*, in timespec*);
 }
-else version( Darwin )
+else version( OSX )
 {
     int sem_timedwait(sem_t*, in timespec*);
 }

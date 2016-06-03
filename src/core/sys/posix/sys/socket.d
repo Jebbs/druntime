@@ -18,15 +18,6 @@ private import core.sys.posix.config;
 public import core.sys.posix.sys.types; // for ssize_t
 public import core.sys.posix.sys.uio;   // for iovec
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C) nothrow @nogc:
 
@@ -605,7 +596,7 @@ version( CRuntime_Glibc )
     int     sockatmark(int);
     int     socketpair(int, int, int, ref int[2]);
 }
-else version( Darwin )
+else version( OSX )
 {
     alias uint   socklen_t;
     alias ubyte  sa_family_t;
@@ -1306,7 +1297,7 @@ version( CRuntime_Glibc )
         AF_INET6    = 10
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum
     {
@@ -1353,7 +1344,7 @@ version( CRuntime_Glibc )
         SOCK_RAW    = 3
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum
     {

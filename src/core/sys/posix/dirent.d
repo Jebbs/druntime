@@ -18,15 +18,6 @@ module core.sys.posix.dirent;
 private import core.sys.posix.config;
 public import core.sys.posix.sys.types; // for ino_t
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -90,7 +81,7 @@ version( CRuntime_Glibc )
         dirent* readdir(DIR*);
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum
     {
@@ -126,12 +117,7 @@ else version( Darwin )
 
     // OS X maintains backwards compatibility with older binaries using 32-bit
     // inode functions by appending $INODE64 to newer 64-bit inode functions.
-    // Other Darwin variants (iOS, TVOS, WatchOS) only support 64-bit inodes,
-    // no suffix needed
-    version( OSX )
-        pragma(mangle, "readdir$INODE64") dirent* readdir(DIR*);
-    else
-        dirent* readdir(DIR*);
+    pragma(mangle, "readdir$INODE64") dirent* readdir(DIR*);
 }
 else version( FreeBSD )
 {
@@ -180,22 +166,14 @@ else version (Solaris)
         char* dd_buf;
     }
 
-    version (D_LP64)
+    static if (__USE_LARGEFILE64)
     {
-        dirent* readdir(DIR*);
-        alias readdir64 = readdir;
+        dirent* readdir64(DIR*);
+        alias readdir64 readdir;
     }
     else
     {
-        static if (__USE_LARGEFILE64)
-        {
-            dirent* readdir64(DIR*);
-            alias readdir64 readdir;
-        }
-        else
-        {
-            dirent* readdir(DIR*);
-        }
+        dirent* readdir(DIR*);
     }
 }
 else version( CRuntime_Bionic )
@@ -233,9 +211,6 @@ else
     static assert(false, "Unsupported platform");
 }
 
-// Only OS X out of the Darwin family needs special treatment.  Other Darwins
-// (iOS, TVOS, WatchOS) are fine with normal symbol names for these functions
-// in else below.
 version( OSX )
 {
     version( D_LP64 )
@@ -280,12 +255,9 @@ version( CRuntime_Glibc )
     int readdir_r(DIR*, dirent*, dirent**);
   }
 }
-else version( Darwin )
+else version( OSX )
 {
-    version( OSX )
-        pragma(mangle, "readdir_r$INODE64") int readdir_r(DIR*, dirent*, dirent**);
-    else
-        int readdir_r(DIR*, dirent*, dirent**);
+    pragma(mangle, "readdir_r$INODE64") int readdir_r(DIR*, dirent*, dirent**);
 }
 else version( FreeBSD )
 {
@@ -330,27 +302,19 @@ else version( FreeBSD )
     void   seekdir(DIR*, c_long);
     c_long telldir(DIR*);
 }
-else version (Darwin)
+else version ( OSX )
 {
-    version( OSX )
+    version ( D_LP64 )
     {
-        version ( D_LP64 )
-        {
-            pragma(mangle, "seekdir$INODE64") void seekdir(DIR*, c_long);
-            pragma(mangle, "telldir$INODE64") c_long telldir(DIR*);
-        }
-        else
-        {
-            // 32-bit mangles __DARWIN_UNIX03 specific functions with $UNIX2003 to
-            // maintain backward compatibility with binaries build pre 10.5
-            pragma(mangle, "seekdir$INODE64$UNIX2003") void seekdir(DIR*, c_long);
-            pragma(mangle, "telldir$INODE64$UNIX2003") c_long telldir(DIR*);
-        }
+        pragma(mangle, "seekdir$INODE64") void seekdir(DIR*, c_long);
+        pragma(mangle, "telldir$INODE64") c_long telldir(DIR*);
     }
-    else // other Darwins (e.g. iOS, TVOS, WatchOS)
+    else
     {
-        void seekdir(DIR*, c_long);
-        c_long telldir(DIR*);
+        // 32-bit mangles __DARWIN_UNIX03 specific functions with $UNIX2003 to
+        // maintain backward compatibility with binaries build pre 10.5
+        pragma(mangle, "seekdir$INODE64$UNIX2003") void seekdir(DIR*, c_long);
+        pragma(mangle, "telldir$INODE64$UNIX2003") c_long telldir(DIR*);
     }
 }
 else version (Solaris)

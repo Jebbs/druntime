@@ -602,23 +602,23 @@ interface IStdMarshalInfo : IUnknown {
 }
 
 interface IMalloc : IUnknown {
-    void* Alloc(SIZE_T);
-    void* Realloc(void*, SIZE_T);
+    void* Alloc(ULONG);
+    void* Realloc(void*, ULONG);
     void Free(void*);
-    SIZE_T GetSize(void*);
+    ULONG GetSize(void*);
     int DidAlloc(void*);
     void HeapMinimize();
 }
 
 interface IMallocSpy : IUnknown {
-    SIZE_T PreAlloc(SIZE_T);
+    ULONG PreAlloc(ULONG);
     void* PostAlloc(void*);
     void* PreFree(void*, BOOL);
     void PostFree(BOOL);
-    SIZE_T PreRealloc(void*, SIZE_T, void**, BOOL);
+    ULONG PreRealloc(void*, ULONG, void**, BOOL);
     void* PostRealloc(void*, BOOL);
     void* PreGetSize(void*, BOOL);
-    SIZE_T PostGetSize(SIZE_T, BOOL);
+    ULONG PostGetSize(ULONG, BOOL);
     void* PreDidAlloc(void*, BOOL);
     int PostDidAlloc(void*, BOOL, int);
     void PreHeapMinimize();

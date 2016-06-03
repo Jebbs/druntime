@@ -17,15 +17,6 @@ module core.sys.posix.pwd;
 private import core.sys.posix.config;
 public import core.sys.posix.sys.types; // for gid_t, uid_t
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -61,7 +52,7 @@ version( CRuntime_Glibc )
         char*   pw_shell;
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     struct passwd
     {
@@ -142,7 +133,7 @@ version( CRuntime_Glibc )
     int getpwnam_r(in char*, passwd*, char*, size_t, passwd**);
     int getpwuid_r(uid_t, passwd*, char*, size_t, passwd**);
 }
-else version( Darwin )
+else version( OSX )
 {
     int getpwnam_r(in char*, passwd*, char*, size_t, passwd**);
     int getpwuid_r(uid_t, passwd*, char*, size_t, passwd**);
@@ -180,7 +171,7 @@ version( CRuntime_Glibc )
     passwd* getpwent();
     void    setpwent();
 }
-else version ( Darwin )
+else version ( OSX )
 {
     void    endpwent();
     passwd* getpwent();

@@ -19,15 +19,6 @@ public import core.stdc.inttypes; // for uint32_t, uint16_t, uint8_t
 public import core.sys.posix.arpa.inet;
 public import core.sys.posix.sys.socket; // for sa_family_t
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C) nothrow @nogc:
 
@@ -123,7 +114,7 @@ version( CRuntime_Glibc )
 
     //enum INET_ADDRSTRLEN       = 16;
 }
-else version( Darwin )
+else version( OSX )
 {
     //alias uint16_t in_port_t;
     //alias uint32_t in_addr_t;
@@ -459,7 +450,7 @@ version ( CRuntime_Glibc )
                ((cast(uint8_t*) addr)[1] & 0xf) == 0xe;
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     struct in6_addr
     {
@@ -990,7 +981,7 @@ version( CRuntime_Glibc )
 {
     enum uint IPPROTO_RAW = 255;
 }
-else version( Darwin )
+else version( OSX )
 {
     enum uint IPPROTO_RAW = 255;
 }

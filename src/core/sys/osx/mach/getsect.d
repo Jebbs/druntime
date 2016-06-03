@@ -1,7 +1,4 @@
 /**
- * $(RED Deprecated. Use $(D core.sys.darwin.mach.getsect) instead. This
- *       module will be removed in June 2018.)
- *
  * Copyright: Copyright Digital Mars 2010.
  * License:   $(WEB www.boost.org/LICENSE_1_0.txt, Boost License 1.0).
  * Authors:   Jacob Carlborg
@@ -15,4 +12,11 @@
  */
 module core.sys.osx.mach.getsect;
 
-public import core.sys.darwin.mach.getsect;
+version (OSX):
+extern (C):
+
+public import core.sys.osx.mach.loader;
+
+const(section)*    getsectbynamefromheader(in mach_header* mhp, in char* segname, in char* sectname);
+const(section_64)* getsectbynamefromheader_64(in mach_header_64* mhp, in char* segname, in char* sectname);
+

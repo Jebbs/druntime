@@ -19,15 +19,6 @@ private import core.sys.posix.config;
 private import core.stdc.stdint;
 public import core.stdc.stddef;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 
@@ -110,7 +101,7 @@ version( CRuntime_Glibc )
     alias slong_t   time_t;
     alias uint      uid_t;
 }
-else version( Darwin )
+else version( OSX )
 {
     alias long      blkcnt_t;
     alias int       blksize_t;
@@ -254,7 +245,7 @@ version( CRuntime_Glibc )
     alias slong_t   suseconds_t;
     alias uint      useconds_t;
 }
-else version( Darwin )
+else version( OSX )
 {
     alias uint   fsblkcnt_t;
     alias uint   fsfilcnt_t;
@@ -542,7 +533,7 @@ version (CRuntime_Glibc)
 
     alias c_ulong pthread_t;
 }
-else version( Darwin )
+else version( OSX )
 {
     version( D_LP64 )
     {
@@ -814,7 +805,7 @@ else version( FreeBSD )
     alias void* pthread_barrier_t;
     alias void* pthread_barrierattr_t;
 }
-else version( Darwin )
+else version( OSX )
 {
 }
 else version (Solaris)

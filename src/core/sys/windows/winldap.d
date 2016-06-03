@@ -31,6 +31,9 @@ version (ANSI) {} else version = Unicode;
 
 import core.sys.windows.schannel, core.sys.windows.winber;
 private import core.sys.windows.wincrypt, core.sys.windows.windef;
+version(Tango){
+    private import tango.stdc.stdio;
+}
 
 align(4):
 
@@ -278,15 +281,8 @@ enum {
     LDAP_SUBSTRING_FINAL
 }
 
-// should be opaque structure
 struct LDAP {
-    struct _ld_sp {
-        UINT_PTR sb_sd;
-        UCHAR[(10*ULONG.sizeof)+1] Reserved1;
-        ULONG_PTR sb_naddr;
-        UCHAR[(6*ULONG.sizeof)] Reserved2;
-    }
-    _ld_sp   ld_sp;
+    char[76] Reserved;
     PCHAR    ld_host;
     ULONG    ld_version;
     UCHAR    ld_lberoptions;
@@ -299,7 +295,6 @@ struct LDAP {
 }
 alias LDAP* PLDAP;
 
-// should be opaque structure
 struct LDAPMessage {
     ULONG        lm_msgid;
     ULONG        lm_msgtype;

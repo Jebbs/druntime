@@ -20,15 +20,6 @@ public import core.stdc.time;
 public import core.sys.posix.sys.types;
 public import core.sys.posix.signal; // for sigevent
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 version (Posix):
 extern (C):
 nothrow:
@@ -53,7 +44,7 @@ version( CRuntime_Glibc )
 {
     time_t timegm(tm*); // non-standard
 }
-else version( Darwin )
+else version( OSX )
 {
     time_t timegm(tm*); // non-standard
 }
@@ -124,7 +115,7 @@ else version (FreeBSD)
     deprecated("Please import it from core.sys.freebsd.time instead.")
         alias CLOCK_MONOTONIC_FAST = core.sys.freebsd.time.CLOCK_MONOTONIC_FAST;
 }
-else version (Darwin)
+else version (OSX)
 {
     // No CLOCK_MONOTONIC defined
 }
@@ -215,7 +206,7 @@ version( CRuntime_Glibc )
     int timer_getoverrun(timer_t);
     int timer_settime(timer_t, int, in itimerspec*, itimerspec*);
 }
-else version( Darwin )
+else version( OSX )
 {
     int nanosleep(in timespec*, timespec*);
 }
@@ -333,7 +324,7 @@ version( CRuntime_Glibc )
     tm*   gmtime_r(in time_t*, tm*);
     tm*   localtime_r(in time_t*, tm*);
 }
-else version( Darwin )
+else version( OSX )
 {
     char* asctime_r(in tm*, char*);
     char* ctime_r(in time_t*, char*);
@@ -387,7 +378,7 @@ version( CRuntime_Glibc )
     tm*   getdate(in char*);
     char* strptime(in char*, in char*, tm*);
 }
-else version( Darwin )
+else version( OSX )
 {
     extern __gshared c_long timezone;
     extern __gshared int    daylight;

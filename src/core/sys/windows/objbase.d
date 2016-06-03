@@ -159,8 +159,8 @@ extern(Windows) {
     HRESULT CoTreatAsClass(REFCLSID, REFCLSID);
     HRESULT DllGetClassObject(REFCLSID, REFIID, PVOID*);
     HRESULT DllCanUnloadNow();
-    PVOID CoTaskMemAlloc(SIZE_T);
-    PVOID CoTaskMemRealloc(PVOID, SIZE_T);
+    PVOID CoTaskMemAlloc(ULONG);
+    PVOID CoTaskMemRealloc(PVOID, ULONG);
     void CoTaskMemFree(PVOID);
     HRESULT CreateDataAdviseHolder(LPDATAADVISEHOLDER*);
     HRESULT CreateDataCache(LPUNKNOWN, REFCLSID, REFIID, PVOID*);

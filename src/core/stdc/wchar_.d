@@ -40,21 +40,6 @@ version( CRuntime_Glibc )
         ___value __value;
     }
 }
-else version (Solaris)
-{
-    ///
-    struct __mbstate_t
-    {
-        version (D_LP64)
-        {
-            long[4] __filler;
-        }
-        else
-        {
-            int[6] __filler;
-        }
-    }
-}
 else
 {
     ///

@@ -59,15 +59,12 @@ extern (Windows) {
 
 
 //#ifdef RPC_UNICODE_SUPPORTED
-extern (Windows) {
-    RPC_STATUS DceErrorInqTextA(RPC_STATUS, char*);
-    RPC_STATUS DceErrorInqTextW(RPC_STATUS, wchar*);
-    RPC_STATUS RpcMgmtEpEltInqNextA(RPC_EP_INQ_HANDLE, RPC_IF_ID*,
-      RPC_BINDING_HANDLE*, UUID*, char**);
-    RPC_STATUS RpcMgmtEpEltInqNextW(RPC_EP_INQ_HANDLE, RPC_IF_ID*,
-      RPC_BINDING_HANDLE*, UUID*, wchar**);
-}
-
+RPC_STATUS DceErrorInqTextA(RPC_STATUS, char*);
+RPC_STATUS DceErrorInqTextW(RPC_STATUS, wchar*);
+RPC_STATUS RpcMgmtEpEltInqNextA(RPC_EP_INQ_HANDLE, RPC_IF_ID*,
+  RPC_BINDING_HANDLE*, UUID*, char**);
+RPC_STATUS RpcMgmtEpEltInqNextW(RPC_EP_INQ_HANDLE, RPC_IF_ID*,
+  RPC_BINDING_HANDLE*, UUID*, wchar**);
 version (Unicode) {
     alias RpcMgmtEpEltInqNextW RpcMgmtEpEltInqNext;
     alias DceErrorInqTextW DceErrorInqText;

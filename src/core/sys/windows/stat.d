@@ -45,6 +45,6 @@ struct struct_stat
     int st_ctime;
 }
 
-int  stat(const(char)*, struct_stat *);
+int  stat(char *, struct_stat *);
 int  fstat(int, struct_stat *) @trusted;
-int  _wstat(const(wchar)*, struct_stat *);
+int  _wstat(wchar *, struct_stat *);

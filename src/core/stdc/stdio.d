@@ -15,15 +15,6 @@
 
 module core.stdc.stdio;
 
-version (OSX)
-    version = Darwin;
-else version (iOS)
-    version = Darwin;
-else version (TVOS)
-    version = Darwin;
-else version (WatchOS)
-    version = Darwin;
-
 private
 {
     import core.stdc.config;
@@ -113,7 +104,7 @@ else version( CRuntime_Glibc )
         L_tmpnam     = 20
     }
 }
-else version( Darwin )
+else version( OSX )
 {
     enum
     {
@@ -315,7 +306,7 @@ else version( CRuntime_Glibc )
     ///
     alias shared(_IO_FILE) FILE;
 }
-else version( Darwin )
+else version( OSX )
 {
     ///
     alias long fpos_t;
@@ -403,48 +394,25 @@ else version( FreeBSD )
 }
 else version (Solaris)
 {
-    import core.stdc.wchar_ : __mbstate_t;
-
-    ///
-    alias mbstate_t = __mbstate_t;
-
     ///
     alias c_long fpos_t;
 
-    version (D_LP64)
+    ///
+    struct _iobuf
     {
-        ///
-        struct _iobuf
-        {
-            char*      _ptr;   /* next character from/to here in buffer */
-            char*      _base;  /* the buffer */
-            char*      _end;   /* the end of the buffer */
-            size_t     _cnt;   /* number of available characters in buffer */
-            int        _file;  /* UNIX System file descriptor */
-            int        _flag;  /* the state of the stream */
-            ubyte[24]  _lock;  //rmutex_t   _lock; /* lock for this structure */
-            mbstate_t  _state; /* mbstate_t */
-            ubyte[32]  __fill; /* filler to bring size to 128 bytes */
-        }
+        char* _ptr;
+        int _cnt;
+        char* _base;
+        char _flag;
+        char _magic;
+        ushort __flags; // __orientation:2
+                        // __ionolock:1
+                        // __seekable:1
+                        // __extendedfd:1
+                        // __xf_nocheck:1
+                        // __filler:10
     }
-    else
-    {
-        ///
-        struct _iobuf
-        {
-            char* _ptr;
-            int _cnt;
-            char* _base;
-            char _flag;
-            char _magic;
-            ushort __flags; // __orientation:2
-                            // __ionolock:1
-                            // __seekable:1
-                            // __extendedfd:1
-                            // __xf_nocheck:1
-                            // __filler:10
-        }
-    }
+
     ///
     alias shared(_iobuf) FILE;
 }
@@ -623,7 +591,7 @@ else version( CRuntime_Glibc )
     ///
     extern shared FILE* stderr;
 }
-else version( Darwin )
+else version( OSX )
 {
     enum
     {
@@ -1021,7 +989,7 @@ else version( CRuntime_Glibc )
     ///
     int  vsnprintf(char* s, size_t n, in char* format, va_list arg);
 }
-else version( Darwin )
+else version( OSX )
 {
   // No unsafe pointer manipulation.
   @trusted
