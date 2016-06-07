@@ -28,32 +28,282 @@ module gc.impl.manual.gc;
 import gc.config;
 import gc.stats;
 import gc.proxy;
+import gc.gc;
 
 import cstdlib = core.stdc.stdlib : calloc, free, malloc, realloc;
 
 static import core.memory;
-private alias BlkAttr = core.memory.GC.BlkAttr;
-private alias BlkInfo = core.memory.GC.BlkInfo;
+
+private
+{
+    alias BlkAttr = core.memory.GC.BlkAttr;
+    alias BlkInfo = core.memory.GC.BlkInfo;
+    alias RootIterator = int delegate(scope int delegate(ref Root) nothrow dg);
+    alias RangeIterator = int delegate(scope int delegate(ref Range) nothrow dg);
+}
+
 
 extern (C) void onOutOfMemoryError(void* pretend_sideffect = null) @trusted pure nothrow @nogc; /* dmd @@@BUG11461@@@ */
 
 import core.stdc.stdio : printf;
 
-struct Range
-{
-    void*  pos;
-    size_t len;
-    TypeInfo ti; // should be tail const, but doesn't exist for references
-}
 
 __gshared GC gcInstance;
 __gshared Proxy  pthis;
+
+__gshared gc.gc.GC instance;
+
+void initialize()
+{
+
+    import core.stdc.string;
+
+    if(config.gc != "manual")
+        return;
+
+
+    auto p = malloc(__traits(classInstanceSize,ManualGC));
+
+    auto gcInst = cast(ManualGC)memcpy(p, typeid(ManualGC).initializer.ptr, typeid(ManualGC).initializer.length);
+
+    gcInst.__ctor();
+
+    instance = cast(gc.gc.GC)gcInst;
+
+    gc_setGC(instance);
+
+}
+
+class ManualGC: gc.gc.GC
+{
+    __gshared Root* roots  = null;
+    __gshared size_t nroots = 0;
+
+    __gshared Range* ranges  = null;
+    __gshared size_t nranges = 0;
+
+    this()
+    {
+
+    }
+
+    void Dtor()
+    {
+        free(roots);
+        free(ranges);
+    }
+
+    void enable(){}
+
+    void disable(){}
+
+    void collect() nothrow{}
+
+    void minimize() nothrow{}
+
+    uint getAttr(void* p) nothrow
+    {
+        return 0;
+    }
+
+    uint setAttr(void* p, uint mask) nothrow
+    {
+        return 0;
+    }
+
+
+    uint clrAttr(void* p, uint mask) nothrow
+    {
+        return 0;
+    }
+
+    void *malloc(size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        void* p = cstdlib.malloc( size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    BlkInfo qalloc( size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        BlkInfo retval;
+        retval.base = malloc(size, bits, ti);
+        retval.size = size;
+        retval.attr = bits;
+        return retval;
+    }
+
+    void *calloc(size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        void* p = cstdlib.calloc( 1, size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    void *realloc(void *p, size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        p = cstdlib.realloc( p, size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    size_t extend(void* p, size_t minsize, size_t maxsize, const TypeInfo ti) nothrow
+    {
+        return 0;
+    }
+
+    size_t reserve(size_t size) nothrow
+    {
+        return 0;
+    }
+
+    /**
+     * Determine the base address of the block containing p.  If p is not a gc
+     * allocated pointer, return null.
+     */
+    void* addrOf(void *p) nothrow
+    {
+        return null;
+    }
+
+
+    /**
+     * Determine the allocated size of pointer p.  If p is an interior pointer
+     * or not a gc allocated pointer, return 0.
+     */
+    size_t sizeOf(void *p) nothrow
+    {
+        return 0;
+    }
+
+
+    /**
+     * Determine the base address of the block containing p.  If p is not a gc
+     * allocated pointer, return null.
+     */
+    BlkInfo query(void *p) nothrow
+    {
+        return BlkInfo.init;   
+    }
+
+
+    GCStats stats() nothrow
+    {
+        return GCStats.init;
+    }
+
+
+    void free(void* p) nothrow
+    {
+        cstdlib.free(p);
+    }
+
+    void addRoot(void* p) nothrow
+    {
+        Root* r = cast(Root*) cstdlib.realloc( roots, (nroots+1) * roots[0].sizeof );
+        if( r is null )
+            onOutOfMemoryError();
+        r[nroots++] = p;
+        roots = r;
+    }
+
+    @property int delegate(scope int delegate(ref Root) nothrow dg) rootIter() @nogc
+    {
+        return &rootsApply;
+    }
+
+    private int rootsApply(scope int delegate(ref Root) nothrow dg)
+    {
+        int result = 0;
+        for(int i = 0; i < nroots; i++)
+        {
+            result = dg(roots[i]);
+
+            if(result)
+                break;
+        }
+
+        return result;
+    }
+
+    void addRange(void* p, size_t sz, const TypeInfo ti = null) nothrow
+    {
+        Range* r = cast(Range*) cstdlib.realloc( ranges, (nranges+1) * ranges[0].sizeof );
+        if( r is null )
+            onOutOfMemoryError();
+        r[nranges].pbot = p;
+        r[nranges].ptop = p+sz;
+        r[nranges].ti = cast()ti;
+        ranges = r;
+        ++nranges;
+    }
+
+    void removeRoot(void* p) nothrow
+    {
+        for( size_t i = 0; i < nroots; ++i )
+        {
+            if( roots[i] is p )
+            {
+                roots[i] = roots[--nroots];
+                return;
+            }
+        }
+        assert( false );
+    }
+
+    void removeRange(void *p) nothrow
+    {
+        for( size_t i = 0; i < nranges; ++i )
+        {
+            if( ranges[i].pbot is p )
+            {
+                ranges[i] = ranges[--nranges];
+                return;
+            }
+        }
+        assert( false );
+    }
+
+    @property int delegate(scope int delegate(ref Range) nothrow dg) rangeIter() @nogc
+    {
+        return &rangesApply;
+    }
+
+    private int rangesApply(scope int delegate(ref Range) nothrow dg)
+    {
+        int result = 0;
+        for(int i = 0; i < nranges; i++)
+        {
+            result = dg(ranges[i]);
+
+            if(result)
+                break;
+        }
+
+        return result;
+    }
+
+    void runFinalizers(in void[] segment) nothrow{}
+
+
+    bool inFinalizer() nothrow
+    {
+        return false;
+    }
+}
+
 
 struct GC
 {
 
 
-    __gshared void** roots  = null;
+    __gshared Root* roots  = null;
     __gshared size_t nroots = 0;
 
     __gshared Range* ranges  = null;
@@ -67,7 +317,6 @@ struct GC
         initProxy();
 
         gc_setProxy(&pthis);
-
     }
 
     private void initProxy()
@@ -116,11 +365,11 @@ struct GC
                 p.gc_addRoot( r );
 
             foreach( r; gcInstance.ranges[0 .. gcInstance.nranges] )
-                p.gc_addRange( r.pos, r.len, r.ti );
+                p.gc_addRange( r.pbot, r.ptop - r.pbot, r.ti );
         };
         pthis.gc_clrProxy = function void(Proxy* p){
             foreach( r; gcInstance.ranges[0 .. gcInstance.nranges] )
-                p.gc_removeRange( r.pos );
+                p.gc_removeRange( r.pbot );
 
             foreach( r; gcInstance.roots[0 .. gcInstance.nroots] )
                 p.gc_removeRoot( r );
@@ -167,7 +416,7 @@ struct GC
 
     void addRoot(void* p) nothrow
     {
-        void** r = cast(void**) realloc( roots, (nroots+1) * roots[0].sizeof );
+        Root* r = cast(Root*) realloc( roots, (nroots+1) * roots[0].sizeof );
         if( r is null )
             onOutOfMemoryError();
         r[nroots++] = p;
@@ -179,8 +428,8 @@ struct GC
         Range* r = cast(Range*) realloc( ranges, (nranges+1) * ranges[0].sizeof );
         if( r is null )
             onOutOfMemoryError();
-        r[nranges].pos = p;
-        r[nranges].len = sz;
+        r[nranges].pbot = p;
+        r[nranges].ptop = p+sz;
         r[nranges].ti = cast()ti;
         ranges = r;
         ++nranges;
@@ -203,7 +452,7 @@ struct GC
     {
         for( size_t i = 0; i < nranges; ++i )
         {
-            if( ranges[i].pos is p )
+            if( ranges[i].pbot is p )
             {
                 ranges[i] = ranges[--nranges];
                 return;

@@ -18,6 +18,7 @@ import manual = gc.impl.manual.gc;
 import gc.config;
 import gc.stats;
 
+
 private
 {
     static import core.memory;
@@ -69,6 +70,10 @@ struct Proxy
     void function(in void[]) gc_runFinalizers;
 
         bool function() gc_inFinalizer;
+        
+        void function() gc_rootIter;
+        void function() gh_rangeIter;
+
         void function(Proxy* p) gc_setProxy;
         void function(Proxy* p) gc_clrProxy;
 
@@ -77,6 +82,7 @@ struct Proxy
 
 extern (C)
 {
+
     void gc_init()
     {
         config.initialize();
@@ -204,14 +210,14 @@ extern (C)
         return proxy.gc_addRoot( p );
     }
 
-    void gc_addRange( void* p, size_t sz, const TypeInfo ti = null ) nothrow
-    {
-        return proxy.gc_addRange( p, sz, ti );
-    }
-
     void gc_removeRoot( void* p ) nothrow
     {
         return proxy.gc_removeRoot( p );
+    }
+
+    void gc_addRange( void* p, size_t sz, const TypeInfo ti = null ) nothrow
+    {
+        return proxy.gc_addRange( p, sz, ti );
     }
 
     void gc_removeRange( void* p ) nothrow
@@ -257,5 +263,4 @@ extern (C)
             proxy = pthis;
         }
     }
-
 }

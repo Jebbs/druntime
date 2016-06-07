@@ -252,6 +252,237 @@ debug (LOGGING)
 
 /* ============================ GC =============================== */
 
+/*
+void initialize()
+{
+
+    import core.stdc.string;
+
+    if(config.gc != "manual")
+        return;
+
+
+    auto p = malloc(__traits(classInstanceSize,ManualGC));
+    instance = cast(ManualGC)memcpy(p, typeid(ManualGC).initializer.ptr, typeid(ManualGC).initializer.length);
+
+    gc_setGC(instance);
+
+}
+
+
+class ConservativeGC: gc.gc.GC
+{
+    
+
+    void initialize()
+    {
+
+    }
+
+    void Dtor()
+    {
+        free(roots);
+        free(ranges);
+    }
+
+    void enable(){}
+
+    void disable(){}
+
+    void collect() nothrow{}
+
+    void minimize() nothrow{}
+
+    uint getAttr(void* p) nothrow
+    {
+        return 0;
+    }
+
+    uint setAttr(void* p, uint mask) nothrow
+    {
+        return 0;
+    }
+
+
+    uint clrAttr(void* p, uint mask) nothrow
+    {
+        return 0;
+    }
+
+    void *malloc(size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        void* p = cstdlib.malloc( size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    BlkInfo qalloc( size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        BlkInfo retval;
+        retval.base = malloc(size, bits, ti);
+        retval.size = size;
+        retval.attr = bits;
+        return retval;
+    }
+
+    void *calloc(size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        void* p = cstdlib.calloc( 1, size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    void *realloc(void *p, size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        p = cstdlib.realloc( p, size );
+
+        if( size && p is null )
+            onOutOfMemoryError();
+        return p;
+    }
+
+    size_t extend(void* p, size_t minsize, size_t maxsize, const TypeInfo ti) nothrow
+    {
+        return 0;
+    }
+
+    size_t reserve(size_t size) nothrow
+    {
+        return 0;
+    }
+
+    
+    void* addrOf(void *p) nothrow
+    {
+        return null;
+    }
+
+
+    
+    size_t sizeOf(void *p) nothrow
+    {
+        return 0;
+    }
+
+
+    
+    BlkInfo query(void *p) nothrow
+    {
+        return BlkInfo.init;   
+    }
+
+
+    GCStats stats() nothrow
+    {
+        return GCStats.init;
+    }
+
+
+    void free(void* p) nothrow
+    {
+        cstdlib.free(p);
+    }
+
+    void addRoot(void* p) nothrow
+    {
+        Root* r = cast(Root*) cstdlib.realloc( roots, (nroots+1) * roots[0].sizeof );
+        if( r is null )
+            onOutOfMemoryError();
+        r[nroots++] = p;
+        roots = r;
+    }
+
+    @property int delegate(scope int delegate(ref Root) nothrow dg) rootIter() @nogc
+    {
+        return &rootsApply;
+    }
+
+    private int rootsApply(scope int delegate(ref Root) nothrow dg)
+    {
+        int result = 0;
+        for(int i = 0; i < nroots; i++)
+        {
+            result = dg(roots[i]);
+
+            if(result)
+                break;
+        }
+
+        return result;
+    }
+
+    void addRange(void* p, size_t sz, const TypeInfo ti = null) nothrow
+    {
+        Range* r = cast(Range*) cstdlib.realloc( ranges, (nranges+1) * ranges[0].sizeof );
+        if( r is null )
+            onOutOfMemoryError();
+        r[nranges].pbot = p;
+        r[nranges].ptop = p+sz;
+        r[nranges].ti = cast()ti;
+        ranges = r;
+        ++nranges;
+    }
+
+    void removeRoot(void* p) nothrow
+    {
+        for( size_t i = 0; i < nroots; ++i )
+        {
+            if( roots[i] is p )
+            {
+                roots[i] = roots[--nroots];
+                return;
+            }
+        }
+        assert( false );
+    }
+
+    void removeRange(void *p) nothrow
+    {
+        for( size_t i = 0; i < nranges; ++i )
+        {
+            if( ranges[i].pbot is p )
+            {
+                ranges[i] = ranges[--nranges];
+                return;
+            }
+        }
+        assert( false );
+    }
+
+    @property int delegate(scope int delegate(ref Range) nothrow dg) rangeIter() @nogc
+    {
+        return &rangesApply;
+    }
+
+    private int rangesApply(scope int delegate(ref Range) nothrow dg)
+    {
+        int result = 0;
+        for(int i = 0; i < nranges; i++)
+        {
+            result = dg(ranges[i]);
+
+            if(result)
+                break;
+        }
+
+        return result;
+    }
+
+    void runFinalizers(in void[] segment) nothrow{}
+
+
+    bool inFinalizer() nothrow
+    {
+        return false;
+    }
+}
+*/
+
+
 
 const uint GCVERSION = 1;       // increment every time we change interface
                                 // to GC.
@@ -1374,6 +1605,7 @@ struct Range
 {
     void *pbot;
     void *ptop;
+    TypeInfo ti; // should be tail const, but doesn't exist for references
     alias pbot this; // only consider pbot for relative ordering (opCmp)
 }
 

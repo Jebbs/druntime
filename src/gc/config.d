@@ -23,7 +23,7 @@ extern extern(C) __gshared string[] rt_options;
 __gshared Config config;
 
 struct Config
-{
+{   bool initialized;
     bool disable;            // start disabled
     ubyte profile;           // enable profiling with summary when terminating program
     string gc = "conservative"; // select gc implementation conservative|manual
@@ -52,6 +52,7 @@ struct Config
             return null; // continue processing
         }
         string s = rt_configOption("gcopt", &parse, true);
+        initialized = true;
         return s is null;
     }
 
@@ -191,40 +192,26 @@ in { assert(str.length); }
 body
 {
 
-    int start;
-    int nscanned;
-
-    for(;start<str.length; start++)
+    bool findNext(string next)
     {
-        if(!isspace(str[start]))
-            break;
+        return (next == str[0 .. next.length]);
     }
 
-    for(nscanned=start; nscanned<str.length; nscanned++)
+    if(findNext("manual"))
     {
-        if(isspace(str[nscanned]))
-            break;
+        res = "manual"; 
+    }
+    else if(findNext("conservative"))
+    {
+        res = "conservative"; 
+    }
+    else
+    {
+        return parseError("conservative or manual", optname, str);
     }
 
-    switch(str[start .. nscanned])
-    {
-        case "manual":
-        {
-            res = "manual";
-            str = str[nscanned .. $];
-            return true;
-        }
-        case "conservative":
-        {
-            res = "conservative";
-            str = str[nscanned .. $];
-            return true;
-        }
-        default:
-        {
-            return parseError("conservative or manual", optname, str);
-        }
-    }
+    str = str[res.length .. $];
+    return true;
 }
 
 bool parseError(in char[] exp, in char[] opt, in char[] got)
