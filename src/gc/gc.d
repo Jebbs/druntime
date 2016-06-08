@@ -1,7 +1,7 @@
 module gc.gc;
 
-import conservative = gc.impl.conservative.gc;
-import manual = gc.impl.manual.gc;
+import gc.impl.conservative.gc;
+import gc.impl.manual.gc;
 import gc.config;
 import gc.stats;
 
@@ -36,6 +36,9 @@ struct Range
     alias pbot this; // only consider pbot for relative ordering (opCmp)
 }
 
+
+const uint GCVERSION = 1;       // increment every time we change interface
+                                // to GC.
 
 interface GC
 {
@@ -197,8 +200,8 @@ extern (C)
     void gc_init()
     {
         config.initialize();
-        manual.initialize();
-        //conservative.gcInstance.initialize();
+        ManualGC.initialize();
+        //ConservativeGC.initialize();
 
         // NOTE: The GC must initialize the thread library
         //       before its first collection.
@@ -367,7 +370,7 @@ extern (C)
                 instance = ithis = inst;
                 return;
             }
-
+            /*
             foreach(root; inst.rootIter)
             {
                 inst.addRoot(root);
@@ -377,13 +380,13 @@ extern (C)
             {
                 inst.addRange(range.pbot, range.ptop - range.pbot, range.ti);
             }
-
+    */
             instance = inst;
         }
 
         void gc_clrGC()
         {
-            foreach(root; ithis.rootIter)
+            /*foreach(root; ithis.rootIter)
             {
                 instance.removeRoot(root);
             }
@@ -391,7 +394,7 @@ extern (C)
             foreach(range; ithis.rangeIter)
             {
                 instance.removeRange(range);
-            }
+            }*/
 
             //do any clean up?
 

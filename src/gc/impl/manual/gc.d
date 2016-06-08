@@ -51,28 +51,6 @@ import core.stdc.stdio : printf;
 __gshared GC gcInstance;
 __gshared Proxy  pthis;
 
-__gshared gc.gc.GC instance;
-
-void initialize()
-{
-
-    import core.stdc.string;
-
-    if(config.gc != "manual")
-        return;
-
-
-    auto p = malloc(__traits(classInstanceSize,ManualGC));
-
-    auto gcInst = cast(ManualGC)memcpy(p, typeid(ManualGC).initializer.ptr, typeid(ManualGC).initializer.length);
-
-    gcInst.__ctor();
-
-    instance = cast(gc.gc.GC)gcInst;
-
-    gc_setGC(instance);
-
-}
 
 class ManualGC: gc.gc.GC
 {
@@ -81,6 +59,33 @@ class ManualGC: gc.gc.GC
 
     __gshared Range* ranges  = null;
     __gshared size_t nranges = 0;
+
+    __gshared ManualGC instance;
+
+    static void initialize()
+    {
+        import core.stdc.string;
+
+        if(config.gc != "manual")
+            return;
+
+
+        auto p =  cstdlib.malloc(__traits(classInstanceSize,ManualGC));
+        if(!p)
+            onOutOfMemoryError();
+
+        instance = cast(ManualGC)memcpy(p, typeid(ManualGC).initializer.ptr, typeid(ManualGC).initializer.length);
+
+        instance.__ctor();
+
+        gc_setGC(instance);
+    }
+
+    shared static ~this()
+    {
+        //need this?
+    }
+
 
     this()
     {
@@ -213,10 +218,11 @@ class ManualGC: gc.gc.GC
         roots = r;
     }
 
-    @property int delegate(scope int delegate(ref Root) nothrow dg) rootIter() @nogc
+    @property RootIterator rootIter() @nogc
     {
         return &rootsApply;
     }
+
 
     private int rootsApply(scope int delegate(ref Root) nothrow dg)
     {

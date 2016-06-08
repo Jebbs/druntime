@@ -43,6 +43,7 @@ import gc.stats;
 import gc.os;
 import gc.config;
 import gc.proxy;
+import gc.gc;   
 
 import rt.util.container.treap;
 
@@ -51,8 +52,15 @@ import core.stdc.string : memcpy, memset, memmove;
 import core.bitop;
 import core.thread;
 static import core.memory;
-private alias BlkAttr = core.memory.GC.BlkAttr;
-private alias BlkInfo = core.memory.GC.BlkInfo;
+
+private
+{
+    alias BlkAttr = core.memory.GC.BlkAttr;
+    alias BlkInfo = core.memory.GC.BlkInfo;
+
+    alias RootIterator = int delegate(scope int delegate(ref Root) nothrow dg);
+    alias RangeIterator = int delegate(scope int delegate(ref Range) nothrow dg);
+}
 
 version (GNU) import gcc.builtins;
 
@@ -252,74 +260,295 @@ debug (LOGGING)
 
 /* ============================ GC =============================== */
 
-/*
-void initialize()
-{
 
-    import core.stdc.string;
-
-    if(config.gc != "manual")
-        return;
-
-
-    auto p = malloc(__traits(classInstanceSize,ManualGC));
-    instance = cast(ManualGC)memcpy(p, typeid(ManualGC).initializer.ptr, typeid(ManualGC).initializer.length);
-
-    gc_setGC(instance);
-
-}
-
+__gshared GC gcInstance;
+__gshared Proxy  pthis;
 
 class ConservativeGC: gc.gc.GC
 {
-    
+    // For passing to debug code (not thread safe)
+    __gshared size_t line;
+    __gshared char*  file;
 
-    void initialize()
+    __gshared ConservativeGC instance;
+
+    uint gcversion = GCVERSION;
+
+    Gcx *gcx;                   // implementation
+
+    import core.internal.spinlock;
+    static gcLock = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
+    static bool _inFinalizer;
+
+    // lock GC, throw InvalidMemoryOperationError on recursive locking during finalization
+    static void lockNR() @nogc nothrow
     {
+        if (_inFinalizer)
+            onInvalidMemoryOperationError();
+        gcLock.lock();
+    }
 
+    static void initialize()
+    {
+        import core.stdc.string: memcpy;
+
+        if(config.gc != "conservative")
+              return;
+
+        auto p = cstdlib.malloc(__traits(classInstanceSize,ConservativeGC));
+
+        if(!p)
+            onOutOfMemoryErrorNoGC();
+
+        instance = cast(ConservativeGC)memcpy(p, typeid(ConservativeGC).initializer.ptr, typeid(ConservativeGC).initializer.length);
+
+        instance.__ctor();
+
+        gc_setGC(instance);
+    }
+
+    shared static ~this()
+    {
+        //is this needed?
+    }
+
+    this()
+    {
+        //config is assumed to have already been initialized
+
+        gcx = cast(Gcx*)cstdlib.calloc(1, Gcx.sizeof);
+        if (!gcx)
+            onOutOfMemoryErrorNoGC();
+        gcx.initialize();
+
+        if (config.initReserve)
+            gcx.reserve(config.initReserve << 20);
+        if (config.disable)
+            gcx.disabled++;
+
+        
     }
 
     void Dtor()
     {
-        free(roots);
-        free(ranges);
+        version (linux)
+        {
+            //debug(PRINTF) printf("Thread %x ", pthread_self());
+            //debug(PRINTF) printf("GC.Dtor()\n");
+        }
+
+        if (gcx)
+        {
+            gcx.Dtor();
+            cstdlib.free(gcx);
+            gcx = null;
+        }
     }
 
-    void enable(){}
+    auto runLocked(alias func, Args...)(auto ref Args args)
+    {
+        debug(PROFILE_API) immutable tm = (config.profile > 1 ? currTime.ticks : 0);
+        lockNR();
+        scope (failure) gcLock.unlock();
+        debug(PROFILE_API) immutable tm2 = (config.profile > 1 ? currTime.ticks : 0);
 
-    void disable(){}
+        static if (is(typeof(func(args)) == void))
+            func(args);
+        else
+            auto res = func(args);
 
-    void collect() nothrow{}
+        debug(PROFILE_API) if (config.profile > 1)
+            lockTime += tm2 - tm;
+        gcLock.unlock();
 
-    void minimize() nothrow{}
+        static if (!is(typeof(func(args)) == void))
+            return res;
+    }
+
+    auto runLocked(alias func, alias time, alias count, Args...)(auto ref Args args)
+    {
+        debug(PROFILE_API) immutable tm = (config.profile > 1 ? currTime.ticks : 0);
+        lockNR();
+        scope (failure) gcLock.unlock();
+        debug(PROFILE_API) immutable tm2 = (config.profile > 1 ? currTime.ticks : 0);
+
+        static if (is(typeof(func(args)) == void))
+            func(args);
+        else
+            auto res = func(args);
+
+        debug(PROFILE_API) if (config.profile > 1)
+        {
+            count++;
+            immutable now = currTime.ticks;
+            lockTime += tm2 - tm;
+            time += now - tm2;
+        }
+        gcLock.unlock();
+
+        static if (!is(typeof(func(args)) == void))
+            return res;
+    }
+
+    void enable()
+    {
+        static void go(Gcx* gcx) nothrow
+        {
+            assert(gcx.disabled > 0);
+            gcx.disabled--;
+        }
+        runLocked!(go, otherTime, numOthers)(gcx);
+    }
+
+    void disable()
+    {
+        static void go(Gcx* gcx) nothrow
+        {
+            gcx.disabled++;
+        }
+        runLocked!(go, otherTime, numOthers)(gcx);
+    }
+
+    void collect() nothrow
+    {
+        fullCollect();
+    }
+
+    void minimize() nothrow
+    {
+        static void go(Gcx* gcx) nothrow
+        {
+            gcx.minimize();
+        }
+        runLocked!(go, otherTime, numOthers)(gcx);
+    }
 
     uint getAttr(void* p) nothrow
     {
-        return 0;
+        if (!p)
+        {
+            return 0;
+        }
+
+        static uint go(Gcx* gcx, void* p) nothrow
+        {
+            Pool* pool = gcx.findPool(p);
+            uint  oldb = 0;
+
+            if (pool)
+            {
+                p = sentinel_sub(p);
+                auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+
+                oldb = pool.getBits(biti);
+            }
+            return oldb;
+        }
+
+        return runLocked!(go, otherTime, numOthers)(gcx, p);
     }
 
     uint setAttr(void* p, uint mask) nothrow
     {
-        return 0;
+        if (!p)
+        {
+            return 0;
+        }
+
+        static uint go(Gcx* gcx, void* p, uint mask) nothrow
+        {
+            Pool* pool = gcx.findPool(p);
+            uint  oldb = 0;
+
+            if (pool)
+            {
+                p = sentinel_sub(p);
+                auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+
+                oldb = pool.getBits(biti);
+                pool.setBits(biti, mask);
+            }
+            return oldb;
+        }
+
+        return runLocked!(go, otherTime, numOthers)(gcx, p, mask);
     }
 
 
     uint clrAttr(void* p, uint mask) nothrow
     {
-        return 0;
+        if (!p)
+        {
+            return 0;
+        }
+
+        static uint go(Gcx* gcx, void* p, uint mask) nothrow
+        {
+            Pool* pool = gcx.findPool(p);
+            uint  oldb = 0;
+
+            if (pool)
+            {
+                p = sentinel_sub(p);
+                auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+
+                oldb = pool.getBits(biti);
+                pool.clrBits(biti, mask);
+            }
+            return oldb;
+        }
+
+        return runLocked!(go, otherTime, numOthers)(gcx, p, mask);
     }
 
     void *malloc(size_t size, uint bits, const TypeInfo ti) nothrow
     {
-        void* p = cstdlib.malloc( size );
+        if (!size)
+        {
+            return null;
+        }
 
-        if( size && p is null )
-            onOutOfMemoryError();
+        size_t localAllocSize = void;
+
+        auto p = runLocked!(mallocNoSync, mallocTime, numMallocs)(size, bits, localAllocSize, ti);
+
+        if (!(bits & BlkAttr.NO_SCAN))
+        {
+            memset(p + size, 0, localAllocSize - size);
+        }
+
+        return p;
+    }
+
+    //
+    //
+    //
+    private void *mallocNoSync(size_t size, uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
+    {
+        assert(size != 0);
+
+        //debug(PRINTF) printf("GC::malloc(size = %d, gcx = %p)\n", size, gcx);
+        assert(gcx);
+        //debug(PRINTF) printf("gcx.self = %x, pthread_self() = %x\n", gcx.self, pthread_self());
+
+        auto p = gcx.alloc(size + SENTINEL_EXTRA, alloc_size, bits);
+        if (!p)
+            onOutOfMemoryErrorNoGC();
+
+        debug (SENTINEL)
+        {
+            p = sentinel_add(p);
+            sentinel_init(p, size);
+            alloc_size = size;
+        }
+        gcx.log_malloc(p, size);
+
         return p;
     }
 
     BlkInfo qalloc( size_t size, uint bits, const TypeInfo ti) nothrow
     {
+        //TODO: Fix this
         BlkInfo retval;
         retval.base = malloc(size, bits, ti);
         retval.size = size;
@@ -329,166 +558,671 @@ class ConservativeGC: gc.gc.GC
 
     void *calloc(size_t size, uint bits, const TypeInfo ti) nothrow
     {
-        void* p = cstdlib.calloc( 1, size );
+        if (!size)
+        {
+            return null;
+        }
 
-        if( size && p is null )
-            onOutOfMemoryError();
+        size_t localAllocSize = void;
+
+        auto p = runLocked!(mallocNoSync, mallocTime, numMallocs)(size, bits, localAllocSize, ti);
+
+        memset(p, 0, size);
+        if (!(bits & BlkAttr.NO_SCAN))
+        {
+            memset(p + size, 0, localAllocSize - size);
+        }
+
         return p;
     }
 
     void *realloc(void *p, size_t size, uint bits, const TypeInfo ti) nothrow
     {
-        p = cstdlib.realloc( p, size );
+        size_t localAllocSize = void;
+        auto oldp = p;
 
-        if( size && p is null )
-            onOutOfMemoryError();
+        p = runLocked!(reallocNoSync, mallocTime, numMallocs)(p, size, bits, localAllocSize, ti);
+
+        if (p !is oldp && !(bits & BlkAttr.NO_SCAN))
+        {
+            memset(p + size, 0, localAllocSize - size);
+        }
+
+        return p;
+    }
+
+     //
+    // bits will be set to the resulting bits of the new block
+    //
+    private void *reallocNoSync(void *p, size_t size, ref uint bits, ref size_t alloc_size, const TypeInfo ti = null) nothrow
+    {
+        if (!size)
+        {   if (p)
+            {   freeNoSync(p);
+                p = null;
+            }
+            alloc_size = 0;
+        }
+        else if (!p)
+        {
+            p = mallocNoSync(size, bits, alloc_size, ti);
+        }
+        else
+        {   void *p2;
+            size_t psize;
+
+            //debug(PRINTF) printf("GC::realloc(p = %p, size = %zu)\n", p, size);
+            debug (SENTINEL)
+            {
+                sentinel_Invariant(p);
+                psize = *sentinel_size(p);
+                if (psize != size)
+                {
+                    if (psize)
+                    {
+                        Pool *pool = gcx.findPool(p);
+
+                        if (pool)
+                        {
+                            auto biti = cast(size_t)(sentinel_sub(p) - pool.baseAddr) >> pool.shiftBy;
+
+                            if (bits)
+                            {
+                                pool.clrBits(biti, ~BlkAttr.NONE);
+                                pool.setBits(biti, bits);
+                            }
+                            else
+                            {
+                                bits = pool.getBits(biti);
+                            }
+                        }
+                    }
+                    p2 = mallocNoSync(size, bits, alloc_size, ti);
+                    if (psize < size)
+                        size = psize;
+                    //debug(PRINTF) printf("\tcopying %d bytes\n",size);
+                    memcpy(p2, p, size);
+                    p = p2;
+                }
+            }
+            else
+            {
+                auto pool = gcx.findPool(p);
+                if (pool.isLargeObject)
+                {
+                    auto lpool = cast(LargeObjectPool*) pool;
+                    psize = lpool.getSize(p);     // get allocated size
+
+                    if (size <= PAGESIZE / 2)
+                        goto Lmalloc; // switching from large object pool to small object pool
+
+                    auto psz = psize / PAGESIZE;
+                    auto newsz = (size + PAGESIZE - 1) / PAGESIZE;
+                    if (newsz == psz)
+                    {
+                        alloc_size = psize;
+                        return p;
+                    }
+
+                    auto pagenum = lpool.pagenumOf(p);
+
+                    if (newsz < psz)
+                    {   // Shrink in place
+                        debug (MEMSTOMP) memset(p + size, 0xF2, psize - size);
+                        lpool.freePages(pagenum + newsz, psz - newsz);
+                    }
+                    else if (pagenum + newsz <= pool.npages)
+                    {   // Attempt to expand in place
+                        foreach (binsz; lpool.pagetable[pagenum + psz .. pagenum + newsz])
+                            if (binsz != B_FREE)
+                                goto Lmalloc;
+
+                        debug (MEMSTOMP) memset(p + psize, 0xF0, size - psize);
+                        debug(PRINTF) printFreeInfo(pool);
+                        memset(&lpool.pagetable[pagenum + psz], B_PAGEPLUS, newsz - psz);
+                        gcx.usedLargePages += newsz - psz;
+                        lpool.freepages -= (newsz - psz);
+                        debug(PRINTF) printFreeInfo(pool);
+                    }
+                    else
+                        goto Lmalloc; // does not fit into current pool
+
+                    lpool.updateOffsets(pagenum);
+                    if (bits)
+                    {
+                        immutable biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+                        pool.clrBits(biti, ~BlkAttr.NONE);
+                        pool.setBits(biti, bits);
+                    }
+                    alloc_size = newsz * PAGESIZE;
+                    return p;
+                }
+
+                psize = (cast(SmallObjectPool*) pool).getSize(p);   // get allocated size
+                if (psize < size ||             // if new size is bigger
+                    psize > size * 2)           // or less than half
+                {
+                Lmalloc:
+                    if (psize && pool)
+                    {
+                        auto biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+
+                        if (bits)
+                        {
+                            pool.clrBits(biti, ~BlkAttr.NONE);
+                            pool.setBits(biti, bits);
+                        }
+                        else
+                        {
+                            bits = pool.getBits(biti);
+                        }
+                    }
+                    p2 = mallocNoSync(size, bits, alloc_size, ti);
+                    if (psize < size)
+                        size = psize;
+                    //debug(PRINTF) printf("\tcopying %d bytes\n",size);
+                    memcpy(p2, p, size);
+                    p = p2;
+                }
+                else
+                    alloc_size = psize;
+            }
+        }
         return p;
     }
 
     size_t extend(void* p, size_t minsize, size_t maxsize, const TypeInfo ti) nothrow
     {
-        return 0;
+        return runLocked!(extendNoSync, extendTime, numExtends)(p, minsize, maxsize, ti);
+    }
+
+    //
+    //
+    //
+    private size_t extendNoSync(void* p, size_t minsize, size_t maxsize, const TypeInfo ti = null) nothrow
+    in
+    {
+        assert(minsize <= maxsize);
+    }
+    body
+    {
+        //debug(PRINTF) printf("GC::extend(p = %p, minsize = %zu, maxsize = %zu)\n", p, minsize, maxsize);
+        debug (SENTINEL)
+        {
+            return 0;
+        }
+        else
+        {
+            auto pool = gcx.findPool(p);
+            if (!pool || !pool.isLargeObject)
+                return 0;
+
+            auto lpool = cast(LargeObjectPool*) pool;
+            auto psize = lpool.getSize(p);   // get allocated size
+            if (psize < PAGESIZE)
+                return 0;                   // cannot extend buckets
+
+            auto psz = psize / PAGESIZE;
+            auto minsz = (minsize + PAGESIZE - 1) / PAGESIZE;
+            auto maxsz = (maxsize + PAGESIZE - 1) / PAGESIZE;
+
+            auto pagenum = lpool.pagenumOf(p);
+
+            size_t sz;
+            for (sz = 0; sz < maxsz; sz++)
+            {
+                auto i = pagenum + psz + sz;
+                if (i == lpool.npages)
+                    break;
+                if (lpool.pagetable[i] != B_FREE)
+                {   if (sz < minsz)
+                        return 0;
+                    break;
+                }
+            }
+            if (sz < minsz)
+                return 0;
+            debug (MEMSTOMP) memset(pool.baseAddr + (pagenum + psz) * PAGESIZE, 0xF0, sz * PAGESIZE);
+            memset(lpool.pagetable + pagenum + psz, B_PAGEPLUS, sz);
+            lpool.updateOffsets(pagenum);
+            lpool.freepages -= sz;
+            gcx.usedLargePages += sz;
+            return (psz + sz) * PAGESIZE;
+        }
     }
 
     size_t reserve(size_t size) nothrow
     {
-        return 0;
+        if (!size)
+        {
+            return 0;
+        }
+
+        return runLocked!(reserveNoSync, otherTime, numOthers)(size);
+    }
+
+    //
+    //
+    //
+    private size_t reserveNoSync(size_t size) nothrow
+    {
+        assert(size != 0);
+        assert(gcx);
+
+        return gcx.reserve(size);
     }
 
     
     void* addrOf(void *p) nothrow
     {
-        return null;
+        if (!p)
+        {
+            return null;
+        }
+
+        return runLocked!(addrOfNoSync, otherTime, numOthers)(p);
+    }
+
+    //
+    //
+    //
+    void* addrOfNoSync(void *p) nothrow
+    {
+        if (!p)
+        {
+            return null;
+        }
+
+        auto q = gcx.findBase(p);
+        if (q)
+            q = sentinel_add(q);
+        return q;
     }
 
 
     
     size_t sizeOf(void *p) nothrow
     {
-        return 0;
+        if (!p)
+        {
+            return 0;
+        }
+
+        return runLocked!(sizeOfNoSync, otherTime, numOthers)(p);
+    }
+
+    //
+    //
+    //
+    private size_t sizeOfNoSync(void *p) nothrow
+    {
+        assert (p);
+
+        debug (SENTINEL)
+        {
+            p = sentinel_sub(p);
+            size_t size = gcx.findSize(p);
+
+            // Check for interior pointer
+            // This depends on:
+            // 1) size is a power of 2 for less than PAGESIZE values
+            // 2) base of memory pool is aligned on PAGESIZE boundary
+            if (cast(size_t)p & (size - 1) & (PAGESIZE - 1))
+                size = 0;
+            return size ? size - SENTINEL_EXTRA : 0;
+        }
+        else
+        {
+            size_t size = gcx.findSize(p);
+
+            // Check for interior pointer
+            // This depends on:
+            // 1) size is a power of 2 for less than PAGESIZE values
+            // 2) base of memory pool is aligned on PAGESIZE boundary
+            if (cast(size_t)p & (size - 1) & (PAGESIZE - 1))
+                return 0;
+            return size;
+        }
     }
 
 
     
     BlkInfo query(void *p) nothrow
     {
-        return BlkInfo.init;   
+        if (!p)
+        {
+            BlkInfo i;
+            return  i;
+        }
+
+        return runLocked!(queryNoSync, otherTime, numOthers)(p); 
+    }
+
+    //
+    //
+    //
+    BlkInfo queryNoSync(void *p) nothrow
+    {
+        assert(p);
+
+        BlkInfo info = gcx.getInfo(p);
+        debug(SENTINEL)
+        {
+            if (info.base)
+            {
+                info.base = sentinel_add(info.base);
+                info.size = *sentinel_size(info.base);
+            }
+        }
+        return info;
     }
 
 
     GCStats stats() nothrow
     {
-        return GCStats.init;
+        GCStats ret;
+
+        runLocked!(getStatsNoSync, otherTime, numOthers)(ret);
+
+        return ret;
     }
 
+    //
+    //
+    //
+    private void getStatsNoSync(out GCStats stats) nothrow
+    {
+        size_t psize = 0;
+        size_t usize = 0;
+        size_t flsize = 0;
+
+        size_t n;
+        size_t bsize = 0;
+
+        //debug(PRINTF) printf("getStats()\n");
+        memset(&stats, 0, GCStats.sizeof);
+
+        for (n = 0; n < gcx.npools; n++)
+        {   Pool *pool = gcx.pooltable[n];
+
+            psize += pool.npages * PAGESIZE;
+            for (size_t j = 0; j < pool.npages; j++)
+            {
+                Bins bin = cast(Bins)pool.pagetable[j];
+                if (bin == B_FREE)
+                    stats.freeblocks++;
+                else if (bin == B_PAGE)
+                    stats.pageblocks++;
+                else if (bin < B_PAGE)
+                    bsize += PAGESIZE;
+            }
+        }
+
+        for (n = 0; n < B_PAGE; n++)
+        {
+            //debug(PRINTF) printf("bin %d\n", n);
+            for (List *list = gcx.bucket[n]; list; list = list.next)
+            {
+                //debug(PRINTF) printf("\tlist %p\n", list);
+                flsize += binsize[n];
+            }
+        }
+
+        usize = bsize - flsize;
+
+        stats.poolsize = psize;
+        stats.usedsize = bsize - flsize;
+        stats.freelistsize = flsize;
+    }
 
     void free(void* p) nothrow
     {
-        cstdlib.free(p);
+        if (!p || _inFinalizer)
+        {
+            return;
+        }
+
+        return runLocked!(freeNoSync, freeTime, numFrees)(p);
+    }
+
+    //
+    //
+    //
+    private void freeNoSync(void *p) nothrow
+    {
+        debug(PRINTF) printf("Freeing %p\n", cast(size_t) p);
+        assert (p);
+
+        Pool*  pool;
+        size_t pagenum;
+        Bins   bin;
+        size_t biti;
+
+        // Find which page it is in
+        pool = gcx.findPool(p);
+        if (!pool)                              // if not one of ours
+            return;                             // ignore
+
+        pagenum = pool.pagenumOf(p);
+
+        debug(PRINTF) printf("pool base = %p, PAGENUM = %d of %d, bin = %d\n", pool.baseAddr, pagenum, pool.npages, pool.pagetable[pagenum]);
+        debug(PRINTF) if(pool.isLargeObject) printf("Block size = %d\n", pool.bPageOffsets[pagenum]);
+
+        bin = cast(Bins)pool.pagetable[pagenum];
+
+        // Verify that the pointer is at the beginning of a block,
+        //  no action should be taken if p is an interior pointer
+        if (bin > B_PAGE) // B_PAGEPLUS or B_FREE
+            return;
+        if ((sentinel_sub(p) - pool.baseAddr) & (binsize[bin] - 1))
+            return;
+
+        sentinel_Invariant(p);
+        p = sentinel_sub(p);
+        biti = cast(size_t)(p - pool.baseAddr) >> pool.shiftBy;
+
+        pool.clrBits(biti, ~BlkAttr.NONE);
+
+        if (pool.isLargeObject)              // if large alloc
+        {
+            assert(bin == B_PAGE);
+            auto lpool = cast(LargeObjectPool*) pool;
+
+            // Free pages
+            size_t npages = lpool.bPageOffsets[pagenum];
+            debug (MEMSTOMP) memset(p, 0xF2, npages * PAGESIZE);
+            lpool.freePages(pagenum, npages);
+        }
+        else
+        {   // Add to free list
+            List *list = cast(List*)p;
+
+            debug (MEMSTOMP) memset(p, 0xF2, binsize[bin]);
+
+            list.next = gcx.bucket[bin];
+            list.pool = pool;
+            gcx.bucket[bin] = list;
+        }
+
+        gcx.log_free(sentinel_add(p));
     }
 
     void addRoot(void* p) nothrow
     {
-        Root* r = cast(Root*) cstdlib.realloc( roots, (nroots+1) * roots[0].sizeof );
-        if( r is null )
-            onOutOfMemoryError();
-        r[nroots++] = p;
-        roots = r;
-    }
-
-    @property int delegate(scope int delegate(ref Root) nothrow dg) rootIter() @nogc
-    {
-        return &rootsApply;
-    }
-
-    private int rootsApply(scope int delegate(ref Root) nothrow dg)
-    {
-        int result = 0;
-        for(int i = 0; i < nroots; i++)
+        if (!p)
         {
-            result = dg(roots[i]);
-
-            if(result)
-                break;
+            return;
         }
 
-        return result;
-    }
-
-    void addRange(void* p, size_t sz, const TypeInfo ti = null) nothrow
-    {
-        Range* r = cast(Range*) cstdlib.realloc( ranges, (nranges+1) * ranges[0].sizeof );
-        if( r is null )
-            onOutOfMemoryError();
-        r[nranges].pbot = p;
-        r[nranges].ptop = p+sz;
-        r[nranges].ti = cast()ti;
-        ranges = r;
-        ++nranges;
+        gcx.addRoot(p);
     }
 
     void removeRoot(void* p) nothrow
     {
-        for( size_t i = 0; i < nroots; ++i )
+        if (!p)
         {
-            if( roots[i] is p )
-            {
-                roots[i] = roots[--nroots];
-                return;
-            }
+            return;
         }
-        assert( false );
+
+        gcx.removeRoot(p);
+    }
+
+    @property RootIterator rootIter() @nogc
+    {
+        return &gcx.rootsApply;
+    }
+
+    //what's going on here?
+    int delegate(scope int delegate(ref Root) nothrow dg) rootIter() @nogc @property
+    {
+        return &gcx.rootsApply;
+    }
+
+    void addRange(void* p, size_t sz, const TypeInfo ti = null) nothrow
+    {
+        if (!p || !sz)
+        {
+            return;
+        }
+
+        gcx.addRange(p, p + sz, ti);
     }
 
     void removeRange(void *p) nothrow
     {
-        for( size_t i = 0; i < nranges; ++i )
+        if (!p)
         {
-            if( ranges[i].pbot is p )
-            {
-                ranges[i] = ranges[--nranges];
-                return;
-            }
-        }
-        assert( false );
-    }
-
-    @property int delegate(scope int delegate(ref Range) nothrow dg) rangeIter() @nogc
-    {
-        return &rangesApply;
-    }
-
-    private int rangesApply(scope int delegate(ref Range) nothrow dg)
-    {
-        int result = 0;
-        for(int i = 0; i < nranges; i++)
-        {
-            result = dg(ranges[i]);
-
-            if(result)
-                break;
+            return;
         }
 
+        gcx.removeRange(p);
+    }
+
+    @property RangeIterator rangeIter() @nogc
+    {
+
+        //(&gcx.rangesApply()).tostring();
+
+        return &gcx.rangesApply;
+    }
+
+
+    void runFinalizers(in void[] segment) nothrow
+    {
+        static void go(Gcx* gcx, in void[] segment) nothrow
+        {
+            gcx.runFinalizers(segment);
+        }
+        return runLocked!(go, otherTime, numOthers)(gcx, segment);
+    }
+
+    /**
+     * Do full garbage collection.
+     * Return number of pages free'd.
+     */
+    size_t fullCollect() nothrow
+    {
+        debug(PRINTF) printf("GC.fullCollect()\n");
+
+        // Since a finalizer could launch a new thread, we always need to lock
+        // when collecting.
+        static size_t go(Gcx* gcx) nothrow
+        {
+            return gcx.fullcollect();
+        }
+        immutable result = runLocked!go(gcx);
+
+        version (none)
+        {
+            GCStats stats;
+
+            getStats(stats);
+            debug(PRINTF) printf("poolsize = %zx, usedsize = %zx, freelistsize = %zx\n",
+                    stats.poolsize, stats.usedsize, stats.freelistsize);
+        }
+
+        gcx.log_collect();
         return result;
     }
 
-    void runFinalizers(in void[] segment) nothrow{}
-
+     /**
+     * do full garbage collection ignoring roots
+     */
+    void fullCollectNoStack() nothrow
+    {
+        // Since a finalizer could launch a new thread, we always need to lock
+        // when collecting.
+        static size_t go(Gcx* gcx) nothrow
+        {
+            return gcx.fullcollect(true);
+        }
+        runLocked!go(gcx);
+    }
 
     bool inFinalizer() nothrow
     {
-        return false;
+        return _inFinalizer;
     }
+
+
+    /**
+     * Verify that pointer p:
+     *  1) belongs to this memory pool
+     *  2) points to the start of an allocated piece of memory
+     *  3) is not on a free list
+     */
+    void check(void *p) nothrow
+    {
+        if (!p)
+        {
+            return;
+        }
+
+        return runLocked!(checkNoSync, otherTime, numOthers)(p);
+    }
+
+    //
+    //
+    //
+    private void checkNoSync(void *p) nothrow
+    {
+        assert(p);
+
+        sentinel_Invariant(p);
+        debug (PTRCHECK)
+        {
+            Pool*  pool;
+            size_t pagenum;
+            Bins   bin;
+            size_t size;
+
+            p = sentinel_sub(p);
+            pool = gcx.findPool(p);
+            assert(pool);
+            pagenum = pool.pagenumOf(p);
+            bin = cast(Bins)pool.pagetable[pagenum];
+            assert(bin <= B_PAGE);
+            size = binsize[bin];
+            assert((cast(size_t)p & (size - 1)) == 0);
+
+            debug (PTRCHECK2)
+            {
+                if (bin < B_PAGE)
+                {
+                    // Check that p is not on a free list
+                    List *list;
+
+                    for (list = gcx.bucket[bin]; list; list = list.next)
+                    {
+                        assert(cast(void*)list != p);
+                    }
+                }
+            }
+        }
+    }
+
 }
-*/
 
-
-
-const uint GCVERSION = 1;       // increment every time we change interface
-                                // to GC.
-
-__gshared GC gcInstance;
-__gshared Proxy  pthis;
 
 struct GC
 {
