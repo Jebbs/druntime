@@ -283,6 +283,7 @@ struct GC
     {
         config.initialize();
 
+
         gcx = cast(Gcx*)cstdlib.calloc(1, Gcx.sizeof);
         if (!gcx)
             onOutOfMemoryErrorNoGC();
