@@ -147,6 +147,11 @@ extern (C)
         return instance.free( p );
     }
 
+    bool gc_emplace( void* p, size_t len, const TypeInfo ti ) nothrow
+    {
+        return instance.emplace( p, len, ti );
+    }
+
     void* gc_addrOf( void* p ) nothrow
     {
         return instance.addrOf( p );
