@@ -1391,6 +1391,8 @@ struct Gcx
 
     List*[B_PAGE] bucket; // free list for each small size
 
+    TypeBucketHolder buckets; //buckets of small objects
+
     // run a collection when reaching those thresholds (number of used pages)
     float smallCollectThreshold, largeCollectThreshold;
     uint usedSmallPages, usedLargePages;
@@ -1405,7 +1407,12 @@ struct Gcx
         ranges.initialize();
         smallCollectThreshold = largeCollectThreshold = 0.0f;
         usedSmallPages = usedLargePages = 0;
-        mappedPages = 0;
+
+        //Initializing with 4 pages for the time being
+        buckets.initialize(4);
+        usedSmallPages = 4;
+        mappedPages = 4;
+
         //printf("gcx = %p, self = %x\n", &this, self);
         debug(INVARIANT) initialized = true;
     }
@@ -1467,6 +1474,13 @@ struct Gcx
             pool.Dtor();
             cstdlib.free(pool);
         }
+
+        buckets.Dtor();
+
+        //just for testing for now
+        //still need to set up page counting
+        mappedPages = 0;
+
         assert(!mappedPages);
         pooltable.Dtor();
 
@@ -1624,14 +1638,22 @@ struct Gcx
         return pooltable.findPool(p);
     }
 
+    TypeBucket* findBucket(void* p) nothrow
+    {
+        return buckets.findBucket(p);
+    }
+
     /**
      * Find base address of block containing pointer p.
      * Returns null if not a gc'd pointer
      */
     void* findBase(void *p) nothrow
     {
-        Pool *pool;
+        void* base = buckets.findBase(p);
+        if(base)
+            return base;
 
+        Pool *pool;
         pool = findPool(p);
         if (pool)
         {
@@ -1669,6 +1691,10 @@ struct Gcx
      */
     size_t findSize(void *p) nothrow
     {
+        TypeBucket* bucket = findBucket(p);
+        if(bucket)
+            return bucket.objectSize;
+
         Pool* pool = findPool(p);
         if (pool)
             return pool.slGetSize(p);
@@ -1779,6 +1805,12 @@ struct Gcx
 
     void* smallAlloc(size_t size, ref size_t alloc_size, uint bits, const TypeInfo ti) nothrow
     {
+        if(size<=64)
+        {
+            alloc_size = size;
+            return buckets.alloc(size,bits,ti);
+        }
+
         immutable bin = binTable[size];
         alloc_size = binsize[bin];
 
@@ -2012,6 +2044,7 @@ struct Gcx
         void* pbot;
         void* ptop;
         Pool* pool;
+        TypeBucket* bucket;
     }
 
     static struct ToScanStack(T)
@@ -2099,7 +2132,11 @@ struct Gcx
             Range[FANOUT_LIMIT] stack = void;
 
         static if (precise)
-            Pool* p1pool = null; // always starting from a non-heap root
+        {
+            // always starting from a non-heap root
+            Pool* p1pool = null;
+            TypeBucket* p1bucket = null;
+        }
 
     Lagain:
         size_t pcache = 0;
@@ -2107,8 +2144,16 @@ struct Gcx
         // let dmd allocate a register for this.pools
         auto pools = pooltable.pools;
         const highpool = pooltable.npools - 1;
-        const minAddr = pooltable.minAddr;
-        const maxAddr = pooltable.maxAddr;
+        static if(precise)
+        {
+            const minAddr = (pooltable.minAddr<buckets.minAddr())? pooltable.minAddr:buckets.minAddr();
+            const maxAddr = (pooltable.maxAddr>buckets.maxAddr())? pooltable.maxAddr:buckets.maxAddr();
+        }
+        else
+        {
+            const minAddr = pooltable.minAddr;
+            const maxAddr = pooltable.maxAddr;
+        }
 
         //printf("marking range: [%p..%p] (%#zx)\n", p1, p2, cast(size_t)p2 - cast(size_t)p1);
     Lnext: for (; p1 < p2; p1++)
@@ -2125,103 +2170,132 @@ struct Gcx
                 {
                     if (!p1pool.is_pointer.test(p1 - cast(void**)p1pool.baseAddr))
                         continue;
+
+                    if(!p1bucket.isPointer(p1))
+                        continue;
                 }
 
                 Pool* pool = void;
                 size_t low = 0;
                 size_t high = highpool;
-                while (true)
-                {
-                    size_t mid = (low + high) >> 1;
-                    pool = pools[mid];
-                    if (p < pool.baseAddr)
-                        high = mid - 1;
-                    else if (p >= pool.topAddr)
-                        low = mid + 1;
-                    else break;
 
-                    if (low > high)
-                        continue Lnext;
+                static if(precise)
+                {
+                    //assume most object are small
+                    TypeBucket* bucket = buckets.findBucket(p);
                 }
-                size_t offset = cast(size_t)(p - pool.baseAddr);
-                size_t biti = void;
-                size_t pn = offset / PAGESIZE;
-                Bins   bin = cast(Bins)pool.pagetable[pn];
-                void* base = void;
-
-                //debug(PRINTF) printf("\t\tfound pool %p, base=%p, pn = %zd, bin = %d, biti = x%x\n", pool, pool.baseAddr, pn, bin, biti);
-
-                // Adjust bit to be at start of allocated memory block
-                if (bin < B_PAGE)
+                else
                 {
-                    // We don't care abou setting pointsToBase correctly
-                    // because it's ignored for small object pools anyhow.
-                    auto offsetBase = offset & notbinsize[bin];
-                    biti = offsetBase >> pool.shiftBySmall;
-                    base = pool.baseAddr + offsetBase;
-                    //debug(PRINTF) printf("\t\tbiti = x%x\n", biti);
-
-                    if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
-                        static if(precise)
-                            stack[stackPos++] = ScanRange(base, base + binsize[bin], pool);
-                        else
-                            stack[stackPos++] = Range(base, base + binsize[bin]);
-
-                        if (stackPos == stack.length)
-                            break;
-                    }
+                    TypeBucket* bucket;
                 }
-                else if (bin == B_PAGE)
+
+                if(bucket)
                 {
-                    auto offsetBase = offset & notbinsize[bin];
-                    base = pool.baseAddr + offsetBase;
-                    biti = offsetBase >> pool.shiftByLarge;
-                    //debug(PRINTF) printf("\t\tbiti = x%x\n", biti);
-
-                    pcache = cast(size_t)p & ~cast(size_t)(PAGESIZE-1);
-
-                    // For the NO_INTERIOR attribute.  This tracks whether
-                    // the pointer is an interior pointer or points to the
-                    // base address of a block.
-                    bool pointsToBase = (base == sentinel_sub(p));
-                    if(!pointsToBase && pool.nointerior.nbits && pool.nointerior.test(biti))
-                        continue;
-
-                    if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
+                    if(!bucket.testMarkAndSet(p) && !(bucket.attributes & BlkAttr.NO_SCAN))
+                    {
+                        auto item = (p - bucket.memory)/bucket.objectSize;
+                        void* base = bucket.memory + (item * bucket.objectSize);//just in case
                         static if(precise)
-                            stack[stackPos++] = ScanRange(base, base + pool.bPageOffsets[pn] * PAGESIZE, pool);
-                        else
-                            stack[stackPos++] = Range(base, base + pool.bPageOffsets[pn] * PAGESIZE);
-
+                            stack[stackPos++] = ScanRange(base, base + bucket.objectSize, null, bucket);
                         if (stackPos == stack.length)
-                            break;
-                    }
-                }
-                else if (bin == B_PAGEPLUS)
-                {
-                    pn -= pool.bPageOffsets[pn];
-                    base = pool.baseAddr + (pn * PAGESIZE);
-                    biti = pn * (PAGESIZE >> pool.shiftByLarge);
-
-                    pcache = cast(size_t)p & ~cast(size_t)(PAGESIZE-1);
-                    if(pool.nointerior.nbits && pool.nointerior.test(biti))
-                        continue;
-
-                    if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
-                        static if(precise)
-                            stack[stackPos++] = ScanRange(base, base + pool.bPageOffsets[pn] * PAGESIZE, pool);
-                        else
-                            stack[stackPos++] = Range(base, base + pool.bPageOffsets[pn] * PAGESIZE);
-
-                        if (stackPos == stack.length)
-                            break;
+                                break;
                     }
                 }
                 else
                 {
-                    // Don't mark bits in B_FREE pages
-                    assert(bin == B_FREE);
-                    continue;
+                    while (true)
+                    {
+                        size_t mid = (low + high) >> 1;
+                        pool = pools[mid];
+                        if (p < pool.baseAddr)
+                            high = mid - 1;
+                        else if (p >= pool.topAddr)
+                            low = mid + 1;
+                        else break;
+
+                        if (low > high)
+                            continue Lnext;
+                    }
+                    size_t offset = cast(size_t)(p - pool.baseAddr);
+                    size_t biti = void;
+                    size_t pn = offset / PAGESIZE;
+                    Bins   bin = cast(Bins)pool.pagetable[pn];
+                    void* base = void;
+
+                    //debug(PRINTF) printf("\t\tfound pool %p, base=%p, pn = %zd, bin = %d, biti = x%x\n", pool, pool.baseAddr, pn, bin, biti);
+
+                    // Adjust bit to be at start of allocated memory block
+                    if (bin < B_PAGE)
+                    {
+                        // We don't care abou setting pointsToBase correctly
+                        // because it's ignored for small object pools anyhow.
+                        auto offsetBase = offset & notbinsize[bin];
+                        biti = offsetBase >> pool.shiftBySmall;
+                        base = pool.baseAddr + offsetBase;
+                        //debug(PRINTF) printf("\t\tbiti = x%x\n", biti);
+
+                        if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
+                            static if(precise)
+                                stack[stackPos++] = ScanRange(base, base + binsize[bin], pool);
+                            else
+                                stack[stackPos++] = Range(base, base + binsize[bin]);
+
+                            if (stackPos == stack.length)
+                                break;
+                        }
+                    }
+                    else if (bin == B_PAGE)
+                    {
+                        auto offsetBase = offset & notbinsize[bin];
+                        base = pool.baseAddr + offsetBase;
+                        biti = offsetBase >> pool.shiftByLarge;
+                        //debug(PRINTF) printf("\t\tbiti = x%x\n", biti);
+
+                        pcache = cast(size_t)p & ~cast(size_t)(PAGESIZE-1);
+
+                        // For the NO_INTERIOR attribute.  This tracks whether
+                        // the pointer is an interior pointer or points to the
+                        // base address of a block.
+                        bool pointsToBase = (base == sentinel_sub(p));
+                        if(!pointsToBase && pool.nointerior.nbits && pool.nointerior.test(biti))
+                            continue;
+
+                        if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
+                            static if(precise)
+                                stack[stackPos++] = ScanRange(base, base + pool.bPageOffsets[pn] * PAGESIZE, pool);
+                            else
+                                stack[stackPos++] = Range(base, base + pool.bPageOffsets[pn] * PAGESIZE);
+
+                            if (stackPos == stack.length)
+                                break;
+                        }
+                    }
+                    else if (bin == B_PAGEPLUS)
+                    {
+                        pn -= pool.bPageOffsets[pn];
+                        base = pool.baseAddr + (pn * PAGESIZE);
+                        biti = pn * (PAGESIZE >> pool.shiftByLarge);
+
+                        pcache = cast(size_t)p & ~cast(size_t)(PAGESIZE-1);
+                        if(pool.nointerior.nbits && pool.nointerior.test(biti))
+                            continue;
+
+                        if (!pool.mark.set(biti) && !pool.noscan.test(biti)) {
+                            static if(precise)
+                                stack[stackPos++] = ScanRange(base, base + pool.bPageOffsets[pn] * PAGESIZE, pool);
+                            else
+                                stack[stackPos++] = Range(base, base + pool.bPageOffsets[pn] * PAGESIZE);
+
+                            if (stackPos == stack.length)
+                                break;
+                        }
+                    }
+                    else
+                    {
+                        // Don't mark bits in B_FREE pages
+                        assert(bin == B_FREE);
+                        continue;
+                    }
                 }
             }
         }
@@ -2236,7 +2310,7 @@ struct Gcx
             // local stack is full, push it to the global stack
             assert(stackPos == stack.length);
             static if(precise)
-                toscan.push(ScanRange(p1, p2, p1pool));
+                toscan.push(ScanRange(p1, p2, p1pool, p1bucket));
             else
                 toscan.push(Range(p1, p2));
             // reverse order for depth-first-order traversal
@@ -2263,7 +2337,18 @@ struct Gcx
         p1 = cast(void**)next.pbot;
         p2 = cast(void**)next.ptop;
         static if (precise)
-            p1pool = next.pool;
+        {
+            if(next.bucket)
+            {
+                p1pool = null;
+                p1bucket = next.bucket;
+            }
+            else
+            {
+                p1pool = next.pool;
+                p1bucket = null;
+            }
+        }
         // printf("  pop [%p..%p] (%#zx)\n", p1, p2, cast(size_t)p2 - cast(size_t)p1);
         goto Lagain;
     }
@@ -2281,6 +2366,10 @@ struct Gcx
     // collection step 1: prepare freebits and mark bits
     void prepare() nothrow
     {
+
+        //both resets mark maps and marks free entries
+        buckets.prepare();
+
         size_t n;
         Pool*  pool;
 
@@ -2347,6 +2436,11 @@ struct Gcx
     // collection step 3: free all unreferenced objects
     size_t sweep() nothrow
     {
+        //buckets are currently swept lazily (was easy to set up)
+        //so we just notify that marking happened and the rest is
+        //taken care of
+        buckets.reorient();
+
         // Free up everything not marked
         debug(COLLECT_PRINTF) printf("\tfree'ing\n");
         size_t freedLargePages;
@@ -2624,6 +2718,12 @@ struct Gcx
      */
     int isMarked(void *addr) nothrow
     {
+        auto bucket = findBucket(addr);
+        if(bucket)
+        {
+            return bucket.isMarked(addr)?IsMarked.yes:IsMarked.no;
+        }
+
         // first, we find the Pool this block is in, then check to see if the
         // mark bit is clear.
         auto pool = findPool(addr);
@@ -2990,12 +3090,12 @@ struct Pool
         {
             noscan.data[dataIndex] |= orWith;
         }
-//        if (mask & BlkAttr.NO_MOVE)
-//        {
-//            if (!nomove.nbits)
-//                nomove.alloc(mark.nbits);
-//            nomove.data[dataIndex] |= orWith;
-//        }
+    //        if (mask & BlkAttr.NO_MOVE)
+    //        {
+    //            if (!nomove.nbits)
+    //                nomove.alloc(mark.nbits);
+    //            nomove.data[dataIndex] |= orWith;
+    //        }
         if (mask & BlkAttr.APPENDABLE)
         {
             appendable.data[dataIndex] |= orWith;
@@ -3536,6 +3636,752 @@ unittest // bugzilla 1180
     }
     catch(OutOfMemoryError)
     {
+    }
+}
+
+/* =========================== TypeBucket ============================== */
+
+//TypeBucket is a hopefully efficient way of storing precise data for small objects.
+
+//Objects are placed together into sets of 32 and differentiated by type.
+//
+//Since every object in the group is the same type,
+//precise data is copied only once.
+//
+//Currently implementation performs lazy sweepy, though it can be changed to
+//regular sweeping or even concurrent sweeping (by type).
+
+struct TypeBucket
+{
+    size_t hash; //Type's hash for identification
+    void* memory; // pointer to the memory used by this bucket
+    uint markMap; //marking canned entries(1 marked, 0 unmarked) 32 objects total
+    uint freeMap; //listing free slots (1, used, 0 free) 32 objects total
+    byte objectSize; //object sizes max out at 64 bytes for TypeBuckets (maybe increase to 128?)
+    uint attributes; //attributes, duh
+    bool hasBeenSwept = true; //true if this bucket has been swept since the last marking
+                              // if false when trying to allocate, sweeping will be done
+    ubyte lastPos; //The last spot in the free list that was used for an alloc.
+                   //It is reset after a sweep
+    ubyte pointerMapSize; //size (in words) of the pointer bitmap
+    //do we care about this? We can do all calculations and never use this
+
+    ushort pointerMapData; //pointer bitmap (1 pointer, 0 non-pointer), max size is 16 words(128bytes)
+    TypeBucket* next; //text typebucket in the list
+    //TypeBucket* topBucket; //the first typebucket to try to allocate from. Come back to this
+
+    /**
+     * Initialize the typebucket.
+     *
+     * Returns:
+     *  The pointer to the first object pushed into the bucket.
+     **/
+    void initialize(size_t size, const(TypeInfo) info, uint bits, ubyte pointerBitmapSize, ushort pointerBitmap, void* memory) nothrow
+    {
+        //everything needs to be initialized so that we don't have to copy
+        //the typeid initializer when the object is created.
+
+        hash = info.toHash();
+        this.memory = memory;
+        markMap = freeMap = 0;
+        objectSize = cast(byte)size;
+        attributes = bits;
+        hasBeenSwept = true;
+        lastPos = 0;
+        pointerMapSize = pointerBitmapSize;
+        pointerMapData = pointerBitmap;
+        next = null;
+    }
+
+    void initializeFromPrevious(size_t size, size_t hash, uint bits, ubyte pointerBitmapSize, ushort pointerBitmap, void* memory) nothrow
+    {
+        this.hash = hash;
+        this.memory = memory;
+        markMap = freeMap = 0;
+        objectSize = cast(byte)size;
+        attributes = bits;
+        hasBeenSwept = true;
+        lastPos = 0;
+        pointerMapSize = pointerBitmapSize;
+        pointerMapData = pointerBitmap;
+        next = null;
+    }
+
+    void addNext(TypeBucket* top, TypeBucket* nextBucket) nothrow
+    {
+        //this is ugly, fix this
+        //(assume this is being called from the top bucket)
+
+        TypeBucket* current = top;
+        for(;;)
+        {
+            if(current.next is null)
+            {
+                current.next = nextBucket;
+                return;
+            }
+            current = current.next;
+        }
+    }
+
+    BlkInfo getInfo()
+    {
+        BlkInfo ret;
+
+        ret.base = memory;
+        ret.size = objectSize*32;
+        ret.attr = attributes;
+
+        return ret;
+    }
+
+    bool isMarked(void* p) nothrow
+    {
+        auto markbit = (p-memory)/objectSize;
+        return (markMap & (0b1000_0000_0000_0000_0000_0000_0000_0000 >> markbit))?true:false;
+    }
+
+    //Test if a mark bit is set, and if it isn't, it will set it.
+    bool testMarkAndSet(void* p) nothrow
+    {
+        auto markbit = (p-memory)/objectSize;
+        if(markMap & (0b1000_0000_0000_0000_0000_0000_0000_0000 >> markbit))
+        {
+            return true;
+        }
+        else
+        {
+            markMap |= (0b1000_0000_0000_0000_0000_0000_0000_0000 >> markbit);
+            return false;
+        }
+    }
+
+    //Tests if a word an object contains is a pointer
+    bool isPointer(void* p) nothrow
+    {
+        //(p-memory)/objectSize gives the position out of the 32 objects we have
+        //(p-memory)%objectSize gives us how far past an object we are
+
+        size_t position = ((p-memory)%objectSize)/size_t.sizeof;
+        return (pointerMapData & (0b0000_0000_0000_0001 << position))?true:false;
+    }
+
+    /**
+     * Get's a new memory address from the bucket.
+     * Returns:
+     *  The memory address of the new object, or null if bucket is full.
+    **/
+    void* allocObject() nothrow
+    {
+        if(!hasBeenSwept)
+        {
+            sweep();
+        }
+
+        //add this in for faster allocations
+        /*
+        if(top !is null)
+        {
+            return top.allocObject();
+        }
+        */
+
+        //check if full first
+        if(freeMap == 0b1111_1111_1111_1111_1111_1111_1111_1111)
+        {
+            if(next is null)
+            {
+                return null;
+            }
+            return next.allocObject();
+        }
+
+        //done this way because it was easier to visualize
+        uint check = 0b1000_0000_0000_0000_0000_0000_0000_0000;
+
+        check>>=lastPos;
+
+        for(ubyte i = lastPos; i < 32;i++)
+        {
+            if(!(freeMap & check))
+            {
+                freeMap |= check;
+                lastPos = i; //i+1 maybe?
+
+                return memory + (objectSize*i);
+            }
+            check >>= 1;
+        }
+
+        return null;
+    }
+
+    //remove this as it was replaced with testMarkAndSet
+    void mark(void* p) nothrow
+    {
+        assert(addressIsInBucket(p));
+
+        if((p-memory)%objectSize)
+            printf("We're in the middle of an object, what are you doing?\n");
+
+        auto markbit = (p-memory)/objectSize;
+
+        markMap |=  (0b1000_0000_0000_0000_0000_0000_0000_0000 >> markbit);
+    }
+
+    //make a template to remove duplicate code
+    void sweep() nothrow
+    {
+        uint check = 0b1000_0000_0000_0000_0000_0000_0000_0000;
+
+        bool freedNothing = false;
+        //if everything was marked, skip to the end
+        if(markMap != 0b1111_1111_1111_1111_1111_1111_1111_1111)
+        {
+            if(attributes & BlkAttr.FINALIZE || attributes & BlkAttr.STRUCTFINAL)
+            {
+                for(int i = 0; i < 32; i++)
+                {
+                    if(~markMap & check)
+                    {
+                        runObjectFinalizer(memory+(i*objectSize));
+
+                        freeMap&= ~check;
+                    }
+                    check>>=1;
+                }
+            }
+            else
+            {
+                for(int i = 0; i < 32; i++)
+                {
+                    if(~markMap & check)
+                    {
+                        freeMap&= ~check;
+                    }
+                    check>>=1;
+                }
+            }
+        }
+        else
+            freedNothing = true;
+
+        markMap = 0;
+        lastPos=0;
+        hasBeenSwept = true;
+
+        //if nothing was freed, sweep the next one?
+        if(freedNothing)
+        {
+            //?
+        }
+    }
+
+    void Dtor() nothrow
+    {
+        //run object finalizers here
+        if(attributes & BlkAttr.FINALIZE || attributes & BlkAttr.STRUCTFINAL)
+        {
+            runObjectFinalizers(freeMap);
+        }
+
+        TypeBucket* toFree = next;
+        if(next !is null)
+        {
+            next.Dtor();
+        }
+    }
+
+    void runObjectFinalizers(uint map) nothrow
+    {
+        //figure this out later, shouldn't loop here if looping during sweeping
+        uint check = 0b1000_0000_0000_0000_0000_0000_0000_0000;
+        for(int i = 0; i < 32; i++)
+        {
+            if(map & check)
+            {
+                rt_finalizeFromGC(memory + (i*objectSize), objectSize, attributes);
+            }
+            check>>=1;
+        }
+    }
+
+    void runObjectFinalizer(void* object) nothrow
+    {
+        rt_finalizeFromGC(object, objectSize, attributes);
+    }
+
+    void printFreeList() nothrow
+    {
+        printMap(freeMap);
+
+        if(next !is null)
+        {
+            next.printFreeList();
+        }
+    }
+
+    void printFreeListInverse() nothrow
+    {
+        printMap(~freeMap);
+
+        if(next !is null)
+        {
+            next.printFreeListInverse();
+        }
+    }
+
+    void printMap(uint map) nothrow
+    {
+        printf("|");
+
+         uint check = 0b1000_0000_0000_0000_0000_0000_0000_0000;
+
+        for(int i = 0; i < 32;i++)
+        {
+            if((map & check))
+            {
+                printf("1|");
+            }
+            else
+            {
+                printf("0|");
+            }
+            check >>= 1;
+        }
+        printf("\n");
+    }
+
+    void printPointerMap() nothrow
+    {
+        printf("|");
+
+         uint check = 0b0000_0000_0000_0001;
+
+        for(int i = 0; i < 16;i++)
+        {
+            if((pointerMapData & check))
+            {
+                printf("1|");
+            }
+            else
+            {
+                printf("0|");
+            }
+            check <<= 1;
+        }
+        printf("\n");
+    }
+
+    //check to see if a particular addres is in this bucket
+    bool addressIsInBucket(void* address) nothrow
+    {
+        if((address>=memory)&&((memory+32*objectSize)>=address))
+            return true;
+        return false;
+    }
+
+    //clears the mark map and marks all free objects
+    void prepare() nothrow
+    {
+        markMap= 0 | ~freeMap;
+
+        if(next !is null)
+        {
+            next.prepare();
+        }
+    }
+
+    //Reorient the bucket after a collection has been done
+    void reorient() nothrow
+    {
+        hasBeenSwept = false;
+        lastPos = 0; // set up lastPos to point to the first free object
+
+        if(next !is null)
+        {
+            next.reorient();
+        }
+    }
+}
+
+struct MemoryChunk
+{
+    void* memory;
+    size_t offset; //where to start getting the memory from
+    size_t chunkSize;//change to top to reduce number of operations?
+}
+
+struct TypeBucketHolder
+{
+    import rt.util.container.array;
+
+    //buckets is currently an array, however a hash map would be better since
+    //search time is very important
+
+    //Not Array!(TypeBucket*) because it does not have support for capacity
+    TypeBucket*[] buckets;
+    ushort bucketsCapacity; //Number of types is currently limited to 65,535
+
+    Array!(MemoryChunk*) memoryChunks; //same as above
+    MemoryChunk* topChunk = null; //first chunk to look at when allocating memory
+
+
+    void initialize(size_t npages)
+    {
+        memoryChunks.insertBack(allocPages(npages));
+
+        bucketsCapacity = 20; //just to start
+        buckets = (cast(TypeBucket**)cstdlib.malloc((TypeBucket*).sizeof * bucketsCapacity))[0 .. 0];
+    }
+
+    void Dtor()
+    {
+        if(buckets.length>0)
+        {
+            foreach(bucket; buckets)
+            {
+                bucket.Dtor();
+            }
+            cstdlib.free(buckets.ptr);
+            buckets = null;
+        }
+
+        foreach(chunk; memoryChunks)
+        {
+            os_mem_unmap(chunk.memory, chunk.chunkSize);
+            cstdlib.free(chunk);
+        }
+
+        memoryChunks.reset();
+        topChunk = null;
+    }
+
+    void* alloc(size_t size, uint bits, const(TypeInfo) ti) nothrow
+    {
+        //this should be faster.
+        TypeBucket* toAlloc = null;
+        size_t hash = ti.toHash();
+
+        int indexToInsert = -1; //this is how we know where to insert
+        //so we don't have to loop through again to find the position
+
+        //linear seach for now, but change to binary search later?
+        for(int i = 0; i < buckets.length; i++)
+        {
+            if(buckets[i].hash == hash)
+            {
+                toAlloc = buckets[i];
+                break;
+            }
+            else if(hash < buckets[i].hash)
+            {
+                indexToInsert = i;
+                break;
+            }
+        }
+
+        if(toAlloc is null)
+        {
+            toAlloc = addNewType(size, bits, ti);
+            if(indexToInsert == -1)
+            {
+                sortBucket(toAlloc, buckets.length);//insert to back
+            }
+            else
+            {
+                sortBucket(toAlloc, indexToInsert);
+            }
+        }
+
+        void* objectMemory = toAlloc.allocObject();
+
+        if(objectMemory is null)
+        {
+            //fix this once things are set up to count mapped pages
+            //if(lowMem)
+            //{
+                //fullcollect();
+            //}
+
+            //adding another bucket first just for testing purposes
+            toAlloc.addNext(toAlloc, createFromPrevious(toAlloc));
+
+            objectMemory = toAlloc.allocObject();
+        }
+
+        return objectMemory;
+    }
+
+    //performs a binary search to get the bucket associated with the hash
+    private TypeBucket* getBucketFromHash(size_t hash, TypeBucket*[] bucketsToSearch)
+    {
+        if(bucketsToSearch.length == 0)
+            return null;
+
+        auto half = bucketsToSearch.length/2;
+
+        auto hashToCheck = bucketsToSearch[half].hash;
+
+        if(hashToCheck == hash)
+        {
+            return bucketsToSearch[half];
+        }
+        else if(hashToCheck>hash)
+        {
+            return getBucketFromHash(hash, bucketsToSearch[half .. $]);
+        }
+        else
+        {
+            return getBucketFromHash(hash, bucketsToSearch[0 .. half]);
+        }
+    }
+
+    //Finds the TypeBucket associated with the given pointer address.
+    TypeBucket* findBucket(void* p) nothrow
+    {
+        //currently a linear search. Can be improved?
+        foreach (bucket;buckets)
+        {
+            auto innerBucket = bucket;
+            while(innerBucket !=null)
+            {
+                if(innerBucket.addressIsInBucket(p))
+                    return innerBucket;
+
+                innerBucket = innerBucket.next;
+            }
+        }
+        return null;
+    }
+
+
+    TypeBucket* addNewType(size_t size, uint bits, const TypeInfo ti) nothrow
+    {
+        //bitmap pointer stuff
+        ubyte pointerBitmapSize;
+        //at max we have 16 words for 64 bytes of data when word size is 4
+        ushort pointerMap;
+
+        if(bits & BlkAttr.NO_SCAN)
+        {
+            pointerBitmapSize = 0;
+            pointerMap = 0;
+        }
+        else
+        {
+            auto rtInfo = cast(const(size_t)*)ti.rtInfo();
+
+            if (rtInfo is rtinfoNoPointers)
+            {
+                pointerBitmapSize = 0;
+                pointerMap = 0;
+            }
+            else if (rtInfo is rtinfoHasPointers)
+            {
+                pointerBitmapSize = cast(ubyte)(size/size_t.sizeof);
+                pointerMap = 0b1111_1111_1111_1111;
+                //do we care? We'll only search upto its size after all
+                //auto shift = pointerMap.sizeof-pointerBitmapSize;
+                //pointerMap >>=shift;
+            }
+            else
+            {
+                pointerBitmapSize = cast(ubyte)(*rtInfo)/(void*).sizeof;
+                rtInfo++;
+
+                pointerMap = cast(ushort)rtInfo[0];
+            }
+        }
+
+
+        //memory looks like this
+        // |TypeBucket|32 Objects|Sentinel Byte|
+        size_t fullsize = TypeBucket.sizeof + (size * 32) + SENTINEL_EXTRA;
+
+        if(!canHouseObjects(fullsize))
+        {
+            //allocate a new chunk of that sweet sweet memory
+
+            //Start using it if there isn't much left in the last one?
+            //maybe have some kind of threshold?
+
+            //currently just sorting it in and then using it right away
+            sortMemoryChunk(allocPages(4));
+        }
+
+        void* fullMemory = getMemory(fullsize);
+
+        auto newBucket = cast(TypeBucket*)fullMemory;
+        fullMemory+=TypeBucket.sizeof;
+
+        newBucket.initialize(size, ti, bits, pointerBitmapSize, pointerMap, fullMemory);
+
+        return newBucket;
+    }
+
+    void sortBucket(TypeBucket* newBucket, size_t index) nothrow
+    {
+        //sort into bucket array
+        //add capacity if need be here
+        if(buckets.length == bucketsCapacity)
+        {
+            bucketsCapacity+=20;
+            buckets = (cast(TypeBucket**)cstdlib.realloc(buckets.ptr,
+                (TypeBucket*).sizeof * bucketsCapacity))[0 .. buckets.length];
+        }
+
+        buckets = buckets.ptr[0 .. buckets.length+1];
+
+        if(index < buckets.length-1) //if not adding to the back
+        {
+            foreach_reverse(i; index .. buckets.length-1)
+            {
+                buckets[i+1] = buckets[i];
+            }
+        }
+
+        buckets[index]=newBucket;
+    }
+
+    TypeBucket* createFromPrevious(TypeBucket* prev) nothrow
+    {
+        size_t fullsize = TypeBucket.sizeof + (prev.objectSize * 32);
+
+        if(!canHouseObjects(fullsize))
+        {
+            //allocate a new chunk of that sweet sweet memory
+
+            //Start using it if there isn't much left in the last one?
+            //maybe have some kind of threshold?
+
+            //currently just sorting it in and then using it right away
+            sortMemoryChunk(allocPages(4));
+        }
+
+        void* fullMemory = getMemory(fullsize);
+
+        TypeBucket* newBucket = cast(TypeBucket*)fullMemory;
+
+        fullMemory+=TypeBucket.sizeof;
+
+        newBucket.initializeFromPrevious(prev.objectSize, prev.hash, prev.attributes, prev.pointerMapSize, prev.pointerMapData, fullMemory);
+
+        return newBucket;
+    }
+
+    MemoryChunk* allocPages(size_t npages) nothrow
+    {
+        MemoryChunk* newChunk = cast(MemoryChunk*)cstdlib.malloc(MemoryChunk.sizeof);
+
+        if(!newChunk)
+            onOutOfMemoryErrorNoGC();
+
+        newChunk.memory = os_mem_map(npages * PAGESIZE);
+        newChunk.chunkSize = npages * PAGESIZE;
+        newChunk.offset = 0;
+
+        //currently assuming that we're going to start using the new memory now
+        topChunk = newChunk;
+
+        return newChunk;
+    }
+
+    void sortMemoryChunk(MemoryChunk* newChunk) nothrow
+    {
+        if(memoryChunks.length == 0)
+        {
+            memoryChunks.insertBack(newChunk);
+            return;
+        }
+
+        int index = -1;
+
+        //linear for now, can be made faster later
+        foreach(int i, MemoryChunk* chunk; memoryChunks)
+        {
+            if(newChunk.memory < chunk.memory)
+            {
+                index = i;
+                break;
+            }
+        }
+
+        if(index == -1)
+        {
+            memoryChunks.insertBack(newChunk);
+            return;
+        }
+
+        memoryChunks.length = memoryChunks.length+1;
+
+        if(index < buckets.length-1) //if not adding to the back
+        {
+            foreach_reverse(i; index .. buckets.length-1)
+            {
+                memoryChunks[i+1] = memoryChunks[i];
+            }
+        }
+
+        memoryChunks[index] = newChunk;
+
+    }
+
+    //base is the pointer where the object start being stored?
+    void* findBase(void* address) nothrow
+    {
+        TypeBucket* bucket = findBucket(address);
+
+        if(bucket)
+        {
+            return bucket.memory;
+        }
+
+        return null;
+    }
+
+    void* getMemory(size_t size) nothrow
+    {
+        //assumes we already checked if this will fit in the chunk
+        void* ret = topChunk.memory+topChunk.offset;
+
+        topChunk.offset+=size;
+
+        return ret;
+    }
+
+    bool canHouseObjects(size_t size) nothrow
+    {
+        return (size <= (topChunk.memory+topChunk.chunkSize)-(topChunk.memory+topChunk.offset));
+    }
+
+    const(byte)* minAddr() nothrow
+    {
+        return cast(const(byte)*)memoryChunks.front.memory;
+    }
+
+    const(byte)* maxAddr() nothrow
+    {
+        return cast(const(byte)*)(memoryChunks.back.memory + memoryChunks.back.chunkSize);
+    }
+
+    //prepare objects for a collection
+    void prepare() nothrow
+    {
+        foreach(bucket; buckets)
+        {
+            bucket.prepare();
+        }
+    }
+
+    //Reorient the buckets after marking is finished
+    //this get's them ready for mini sweeps if needed
+    void reorient() nothrow
+    {
+        foreach(bucket; buckets)
+        {
+            bucket.reorient();
+        }
     }
 }
 
