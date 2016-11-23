@@ -993,6 +993,7 @@ unittest
 {
     static struct T
     {
+        ubyte field;
         static size_t postblit, dtor;
         this(this)
         {
