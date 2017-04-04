@@ -3458,9 +3458,10 @@ void __ctfeWrite(scope const(char)[] s) @nogc @safe pure nothrow {}
  * Create RTInfo for type T
  */
 
-template RTInfo(T)
+template RTInfoImpl(size_t[] pointers)
 {
-    enum RTInfo = null;
+    immutable size_t[pointers.length] data = pointers[];
+    immutable RTInfoImpl = data.ptr;
 }
 
 // lhs == rhs lowers to __equals(lhs, rhs) for dynamic arrays
@@ -4090,6 +4091,11 @@ void __switch_error()(string file = __FILE__, size_t line = __LINE__)
     import core.exception : __switch_errorT;
     __switch_errorT(file, line);
 }
+ template RTInfo(T)
+ {
+    enum RTInfo = RTInfoImpl!(__traits(getPointerBitmap, T));
+ }
+
 
 // Helper functions
 

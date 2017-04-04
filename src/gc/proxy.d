@@ -16,6 +16,7 @@ module gc.proxy;
 import gc.impl.conservative.gc;
 import gc.impl.manual.gc;
 import gc.impl.proto.gc;
+import gc.impl.typed.gc;
 import gc.config;
 import gc.gcinterface;
 
@@ -45,6 +46,7 @@ extern (C)
             config.initialize();
             ManualGC.initialize(instance);
             ConservativeGC.initialize(instance);
+            TypedGC.initialize(instance);
 
             if (instance is protoInstance)
             {
@@ -96,6 +98,7 @@ extern (C)
 
             ManualGC.finalize(instance);
             ConservativeGC.finalize(instance);
+            TypedGC.finalize(instance);
         }
     }
 

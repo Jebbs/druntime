@@ -10,4 +10,6 @@ trace.log
 /Makefile
 /errno_c*.obj
 /msvc*.obj
+gctest/*
+!gctest/allocationtest1.d
 make

@@ -1,0 +1,24 @@
+{
+    // See https://go.microsoft.com/fwlink/?LinkId=733558
+    // for the documentation about the tasks.json format
+    "version": "0.1.0",
+    "isShellCommand": true,
+    "tasks": [
+        { "taskName": "build",
+          "command": "make",
+          "args": ["-fposix.mak", "BUILD=debug"],
+          "windows":{
+            "args": ["-fwin32.mak"]
+          }
+        },
+        { "taskName": "buildTest",
+         "command": "${workspaceRoot}/../dmd/src/dmd",
+         "args": ["-g", "-conf=", "-defaultlib=", "-debuglib=", "-debug",
+                  "-L--export-dynamic", "-I${workspaceRoot}/src",
+                  "${workspaceRoot}/gctest/allocationtest1.d",
+                  "-L${workspaceRoot}/generated/linux/debug/64/libdruntime.a",
+                  "-of${workspaceRoot}/gctest/test"]
+        }
+    ],
+    "showOutput": "always"
+}
