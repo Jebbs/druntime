@@ -93,6 +93,7 @@ class TypedGC : GC
             return;
 
         auto instance = cast(TypedGC) gc;
+        instance.__dtor();
         instance.Dtor();
         cstdlib.free(cast(void*) instance);
     }
@@ -103,15 +104,19 @@ class TypedGC : GC
     this()
     {
     }
-
-    /**
-     * Destructor for the Typed GC.
-     */
-    void Dtor()
+    ~this()
     {
         buckets.dtor();
         roots.reset();
         ranges.reset();
+    }
+
+    /**
+     * Destructor for the Typed GC.
+     */
+    void Dtor()//can I remove this?
+    {
+        
     }
 
     /**
@@ -664,7 +669,6 @@ class TypedGC : GC
 
             //test if interior pointer
 
-
             if(!bucket.testMarkAndSet(pointer))
             {
                 //printf("pointer = %X\n", p1);
@@ -674,11 +678,8 @@ class TypedGC : GC
                 uint attr = bucket.getAttr(pointer);
                 uint noScan = BlkAttr.NO_SCAN;
 
-
                 if((bucket.getAttr(pointer) & BlkAttr.NO_SCAN))
                     continue;
-
-//                printf("These assholes are pointers!\n");
 
                 uint pointerMap = bucket.pointerMap;
                 void* start = pointer;
@@ -929,6 +930,14 @@ struct TypeBucket
         // do the stuff
         id = ti.toHash();
 
+        if(TypeInfo_Array c = cast(TypeInfo_Array)ti) //works, so use it
+        {
+            int i = 0;
+        }
+
+
+        uint hash = id % 101;
+
         //this is ok for now because we will make sure objectSize is large enough
         //to hold the actual size of an object later
         objectSize = cast(typeof(objectSize))size;
@@ -1094,7 +1103,7 @@ struct TypeBucket
 
         if(p >= memory && p < memory + objectSize*ObjectsPerBucket)
             return true;
-        
+
         if(nextBucket is null)
             return false;
 
