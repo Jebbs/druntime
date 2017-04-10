@@ -1,8 +1,8 @@
 
 //describes the boundaries of the GC managed heap
-//these are used when searching for pointers (if not in these bounds, we won't perform a search)
+//these are used when searching for pointers
+//(if not in these bounds, we won't perform a search)
 void* memBottom, memTop;
-
 
 ///system alloc for internal structures
 void* salloc(size_t size);
@@ -40,11 +40,11 @@ BucketNode* root;
  * This organizes the buckets based on the span of their memory since it will
  * never overlap from bucket to bucket
  *
- * This is a normal binary, and could be optimaized later. Possibly an AVL tree?
+ * This is a normal binary, and could be optimized later. Possibly an AVL tree?
  */
 void insertBucket(TypeBucket* bucket)
 {
-    //make the new node, because it has to go somewhere
+    //make the new node, because it must go somewhere
     BucketNode* newNode = cast(BucketNode*)salloc(BucketNode.sizeof);
     newNode.bucket = bucket;
     newNode.left = null;
@@ -87,7 +87,6 @@ void insertBucket(TypeBucket* bucket)
     assert(0);//we should never end up here!
 }
 
-
 TypeBucket* findBucket(void* ptr)
 {
     //check if the pointer is in the boundaries of the heap memory
@@ -105,4 +104,3 @@ TypeBucket* findBucket(void* ptr)
 
     return null;
 }
-

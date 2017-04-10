@@ -2,15 +2,15 @@
 import core.memory;
 
 //describes the boundaries of the GC managed heap
-//these are used when searching for pointers (if not in these bounds, we won't perform a search)
+//these are used when searching for pointers
+//(if not in these bounds, we won't perform a search)
 void* memBottom, memTop;
 
-//defined in gc.os module. These are desined to allocate pages at a time.
+//defined in gc.os module. These are designed to allocate pages at a time.
 void *os_mem_map(size_t nbytes) nothrow;
 int os_mem_unmap(void *base, size_t nbytes) nothrow;
 
 enum PAGE_SIZE = 4096;//4kb
-
 
 TypeBucket* findBucket(void* ptr);
 
@@ -32,9 +32,11 @@ struct TypeBucket
     {
         auto pos = (p - memory)/objectSize;
 
-        if(attributes[pos] & BlkAttr.NO_INTERIOR) //check if we can skip interior pointers
+        //check if we can skip interior pointers
+        if(attributes[pos] & BlkAttr.NO_INTERIOR)
         {
-            if(p !is memory + pos*objectSize)//check to see if we point to the base or not
+            //check to see if we point to the base or not
+            if(p !is memory + pos*objectSize)
             {
                 //true implies this data does not need to be scanned.
                 //might need to rewrite the documentation to mention this case
@@ -60,7 +62,7 @@ struct TypeBucket
  */
 struct ScanRange
 {
-    void* pbot, ptop; //the astrisk is left associative, these are both pointers
+    void* pbot, ptop; //the asterisk is left associative, these are both pointers
     size_t pointerMap;
 
     //this allows the ScanRange to be used in a foreach loop
@@ -71,7 +73,6 @@ struct ScanRange
 
         void** memBot = cast(void**)pbot;
         void** memTop = cast(void**)ptop;
-
 
         if(pointerMap == size_t.max) //scan conservatively
         {
@@ -98,7 +99,6 @@ struct ScanRange
     }
 }
 
-
 struct ScanStack
 {
     void* memory;
@@ -107,13 +107,14 @@ struct ScanStack
 
     this(size_t size)
     {
-        //allocate size amount of memory and and set up array
+        //allocate size amount of memory and set up array
 
         assert(size%ScanRange.sizeof == 0);//should always be wholly divisible
 
         memory = os_mem_map(size);
 
-        array = (cast(ScanRange*)memory)[0 .. (size/ScanRange.sizeof)]; //pretend this is an array of ScanRanges
+        //pretend this is an array of ScanRanges
+        array = (cast(ScanRange*)memory)[0 .. (size/ScanRange.sizeof)];
 
     }
     ~this()
@@ -139,19 +140,19 @@ struct ScanStack
     }
 }
 
-
-//Start the stack at some large size so that we hopefully never run into an overflow
+//Start the stack at some large size
+//so that we hopefully never run into an overflow
 ScanStack scanStack = ScanStack(3*PAGE_SIZE);
 
-
 /**
- * The mark function will go through the memory range given to it and look for pointers.
- * If any are possibly found, the pointer will be marked as reachable, and the
- * memory it points to will be scanned, and so on.
+ * The mark function will go through the memory range given to it and look for
+ * pointers. If any are possibly found, the pointer will be marked as reachable,
+ * and the memory it points to will be scanned, and so on.
  */
 void mark(void* memBot, void* memTop)
 {
-    scanStack.push(ScanRange(memBot, memTop, size_t.max)); //push the current range onto the stack to start the algorithm
+    //push the current range onto the stack to start the algorithm
+    scanStack.push(ScanRange(memBot, memTop, size_t.max));
 
     while(!scanStack.empty())
     {
@@ -178,4 +179,3 @@ void mark(void* memBot, void* memTop)
     }
 
 }
-

@@ -1,12 +1,10 @@
 module alloc;
 
-//defined in gc.os module. These are desined to allocate pages at a time.
+//defined in gc.os module. These are designed to allocate pages at a time.
 void *os_mem_map(size_t nbytes) nothrow;
 int os_mem_unmap(void *base, size_t nbytes) nothrow;
 
-
 enum PAGE_SIZE = 4096;//4kb
-
 
 /**
  * MemoryChunk describes a chunk of memory obtained directly from the OS.
@@ -19,10 +17,12 @@ struct MemoryChunk
     size_t chunkSize;
     /// Where in the chunk to pop memory from when allocating.
     void* offset;
-    /// A reference to the next chunk. (used to avoid an additional structure for making a linked list)
+    /// A reference to the next chunk.
+    //(used to avoid an additional structure for making a linked list)
     MemoryChunk* nextChunk;
 
-    ///MemoryChunk constructor. Initializes this chunk with new memory from the OS
+    //MemoryChunk constructor.
+    //Initializes this chunk with new memory from the OS
     this(size_t size)
     {
         chunkSize = size;
@@ -36,16 +36,19 @@ struct MemoryChunk
     }
 }
 
+//initialized to 64kb/1Mb (256 pages) and assumed to not grow
+//(too much memory to start?)
+MemoryChunk systemMemory;
 
-MemoryChunk systemMemory; //initialized to 64kb/1Mb (256 pages) and assumed to not grow (too much memory to start?)
-
-MemoryChunk* heapMemory; //the list of all memory chunks used by the heap. initialized with a chunk
-MemoryChunk* currentChunk; //the chunk currently used to perform allocations
+//the list of all memory chunks used by the heap. initialized with a chunk
+MemoryChunk* heapMemory;
+//the chunk currently used to perform allocations
+MemoryChunk* currentChunk;
 
 //describes the boundaries of the GC managed heap
-//these are used when searching for pointers (if not in these bounds, we won't perform a search)
+//these are used when searching for pointers
+//(if not in these bounds, we won't perform a search)
 void* memBottom, memTop;
-
 
 void systemInit()
 {
@@ -57,23 +60,21 @@ void systemInit()
 
     currentChunk = heapMemory;
 
-
     memBottom = currentChunk.start;
     memTop = currentChunk.start + currentChunk.size;
 
 }
-
 
 /**
  * System Alloc.
  *
  * This is used to allocate for internal structures. It is assumed to never fail
  * for 2 reasons:
- *  1. There is plenty of memory for the ssytem to use internally. We should
+ *  1. There is plenty of memory for the system to use internally. We should
  *     always have enough.
- *  2. The memory usage for a program should evenutally hit a peak. Given enough
+ *  2. The memory usage for a program should eventually hit a peak. Given enough
  *     time, there will be plenty of storage space after a collection to not
- *     warrent creating more internal objects.
+ *     warrant creating more internal objects.
  */
 void* salloc(size_t size)
 {
@@ -107,14 +108,12 @@ void* halloc(size_t)
         currentChunk.nextChunk = newChunk;
         currentChunk = newChunk;
 
-
-        //adjust the heap boudnaries
+        //adjust the heap boundaries
         if(currentChunk.start < memBottom)
             memBottom = currentChunk.start;
 
         if(memTop < currentChunk.start + currentChunk.size)
             memTop = currentChunk.start + currentChunk.size;
-
 
 
     }
@@ -123,5 +122,3 @@ void* halloc(size_t)
     currentChunk.offset += size;
     return oldOffset;
 }
-
-

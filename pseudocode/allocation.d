@@ -4,16 +4,13 @@ import core.sync.mutex;
 import core.stdc.string;
 
 
-
-//defined in gc.os module. These are desined to allocate pages at a time.
+//defined in gc.os module. These are designed to allocate pages at a time.
 void *os_mem_map(size_t nbytes) nothrow;
 int os_mem_unmap(void *base, size_t nbytes) nothrow;
-
 
 enum PAGE_SIZE = 4096;//4kb
 
 //defined in TypeGC class for internal use
-
 
 ///system alloc for internal structures
 void* salloc(size_t size);
@@ -65,11 +62,13 @@ struct TypeManager
 
     Mutex mutex;
 
-
     bool isArrayType;
 
-    TypeNode* buckets;//the start of the linked list
-    TypeNode* allocateBucketNode;//the bucket for new allocations (may not necessarily be the last bucket in the list)
+    //the start of the linked list
+    TypeNode* buckets;
+    //the bucket for new allocations
+    //(may not necessarily be the last bucket in the list)
+    TypeNode* allocateBucketNode;
 
     /**
      * Construct a new TypeManager.
@@ -93,12 +92,10 @@ struct TypeManager
         }
         this.objectSize = objectSize;
 
-
         //Check to see if the type info describes an array type
         //this cast will fail if ti doesn't describe an array
 
         isArrayType = (cast(TypeInfo_Array)ti !is null)?true:false;
-
 
         if(isArrayType)
         {
@@ -111,7 +108,7 @@ struct TypeManager
         else
         {
             //get the heap memory for the bucket
-            void* bucketMemory = halloc(TypeBucket.ObjectsPerBucket * objectSize);
+            void* bucketMemory = halloc(TypeBucket.ObjectsPerBucket*objectSize);
 
             //initialize the bucket
             *(buckets.bucket) = TypeBucket(objectSize ,pointerMap, bucketMemory);
@@ -119,7 +116,6 @@ struct TypeManager
 
         //assign the new node as the one we'll use to allocate
         allocateBucketNode = buckets;
-
 
         //create the mutex
         //this is done in this way because Mutex is a class, and would normally
@@ -130,14 +126,15 @@ struct TypeManager
 
         mutex = cast(Mutex) memcpy(p, init.ptr, init.length);
 
-        mutex.__ctor();//cal the constructor explicitly
+        mutex.__ctor();//call the constructor explicitly
 
     }
 
     void* alloc(uing bits)
     {
         mutex.lock();
-        scope(exit) mutex.unlock(); //will call mutex.unlock() at the exiting of the scope
+        //will call mutex.unlock() at the end of the scope
+        scope(exit) mutex.unlock();
 
         return getBucket().alloc(bits);
     }
@@ -169,11 +166,11 @@ struct TypeManager
                     newNode.bucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
                     //get the heap memory for the bucket
-                    void* bucketMemory = halloc(TypeBucket.ObjectsPerBucket * objectSize);
+                    void* bucketMemory = halloc(TypeBucket.ObjectsPerBucket*objectSize);
 
                     //initialize the bucket
-                    *(newNode.bucket) = TypeBucket(objectSize ,pointerMap, bucketMemory);
-
+                    *(newNode.bucket) = TypeBucket(objectSize ,pointerMap,
+                                                   bucketMemory);
 
                     //put it in the linked list
                     allocateBucketNode.next = newNode;
@@ -193,8 +190,8 @@ struct TypeManager
 }
 
 
-
-//approx 50 unique data TypeStorage, assume that is enough to begin with? (make it configurable)
+//approx. 50 unique data TypeStorage, assume that is enough to begin with?
+//(make it configurable)
 uint hashSize = 101;
 
 TypeManager[] hashArray;
@@ -207,16 +204,18 @@ void hashInit()
 
     uint numberOfPages = getNumberOfPagesNeeded(hashSize*TypeStorage.sizeof);
 
-    size_t hashMemorySize = numberOfPages*PAGE_SIZE;//keep this to free memory later
+    //keep this to free memory later
+    size_t hashMemorySize = numberOfPages*PAGE_SIZE;
     void* memory = os_mem_map(hashMemorySize);
 
-    hashArray = (cast(TypeManager*)memory)[0 .. hashSize];//pretend the memory is actually an array
+    //pretend the memory is actually an array
+    hashArray = (cast(TypeManager*)memory)[0 .. hashSize];
 
     memset(memory, 0, hashSize*TypeStorage.sizeof); //set everything to zero!
 
 }
 
-///get's how many minumum pages are needed to store this number of bytes
+///gets how many minimum pages are needed to store this number of bytes
 //this is used to set up the storage area used by the hash table
 uint getNumberOfPagesNeeded(size_t bytes)
 {
@@ -261,7 +260,7 @@ ref TypeManager getTypeManager(size_t size, const TypeInfo ti)
 
             return hashArray[pos];
         }
-        else if(hashArray[pos].info is ti) //is confirms two things are the same, == does a contents comparison
+        else if(hashArray[pos].info is ti)
         {
             return hashArray[pos];
         }
@@ -269,7 +268,6 @@ ref TypeManager getTypeManager(size_t size, const TypeInfo ti)
         attempts++;
     }
 }
-
 
 
 /**
@@ -286,4 +284,3 @@ void* malloc(size_t size, uint bits, const TypeInfo ti) nothrow
 
     return typeManager.alloc(bits);
 }
-
