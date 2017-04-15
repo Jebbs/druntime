@@ -8,33 +8,71 @@ module gc.impl.typed.gc;
 
 import core.bitop; //bsf
 import cstdlib = core.stdc.stdlib : calloc, free, malloc, realloc;
+import corelib = core.sync.mutex;
 import core.thread;
 
 import gc.config;
 import gc.gcinterface;
+import os = gc.os; //os_mem_map, os_mem_unmap
 
 import rt.util.container.array;
 
+
+import core.internal.spinlock;
+
 //static import core.memory;
 
+///Identifier for the size of a page in bytes
+enum PAGE_SIZE = 4096; //4kb
+
 extern (C)
+{
+    // to allow compilation of this module without access to the rt package,
+    // make these functions available from rt.lifetime
+
+    /// Call the destructor/finalizer on a given object.
+    void rt_finalizeFromGC(void* p, size_t size, uint attr) nothrow;
+    /// Check if the object at this memroy has a destructor/finalizer.
+    int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow;
+
+    // Declared as an extern instead of importing core.exception
+    // to avoid inlining - see issue 13725.
+
+    /// Raise an error that describes an invalid memory operation.
+    void onInvalidMemoryOperationError() @nogc nothrow;
+    /// Raise an error that describes the system as being out of memory.
+    void onOutOfMemoryErrorNoGC() @nogc nothrow;
+}
+
+
+uint mem_maps, mem_unmaps;
+
+uint mem_mappedSize, mem_unmappedSize;
+
+
+void* os_mem_map(size_t nbytes) nothrow
+{
+    debug
     {
-        // to allow compilation of this module without access to the rt package,
-        // make these functions available from rt.lifetime
-
-        /// Call the destructor/finalizer on a given object.
-        void rt_finalizeFromGC(void* p, size_t size, uint attr) nothrow;
-        /// Check if the object at this memroy has a destructor/finalizer.
-        int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow;
-
-        // Declared as an extern instead of importing core.exception
-        // to avoid inlining - see issue 13725.
-
-        /// Raise an error that describes an invalid memory operation.
-        void onInvalidMemoryOperationError() @nogc nothrow;
-        /// Raise an error that describes the system as being out of memory.
-        void onOutOfMemoryErrorNoGC() @nogc nothrow;
+        mem_maps++;
+        mem_mappedSize+= nbytes;
     }
+
+    return os.os_mem_map(nbytes);
+}
+
+int os_mem_unmap(void* base, size_t nbytes) nothrow
+{
+    debug
+    {
+        mem_unmaps++;
+        mem_unmappedSize+=nbytes;
+    }
+    return os.os_mem_unmap(base, nbytes);
+}
+
+
+
 
 /**
  * The Typed GC organizes memory based on type.
@@ -47,8 +85,159 @@ class TypedGC : GC
     /// Array of ranges of data to search for pointers.
     Array!Range ranges;
 
-    /// The holder of buckets
-    BinTree buckets;
+    /**
+    * The boundaries of the heap.
+    *
+    * Used to detect if a pointer is contained in the GC managed heap.
+    */
+    void* heapBottom, heapTop;
+
+    ///The memory used by the system.
+    //initialized to 64kb/1Mb (256 pages) and assumed to not grow
+    MemoryChunk systemMemory;
+
+    /// The list of all memory chunks used by the heap.
+    MemoryChunk* heapMemory;
+    /// The chunk currently used to perform allocations.
+    MemoryChunk* currentChunk;
+
+    /// Mutexes used by the system and heap allocators respectively.
+    //Mutex smutex, hmutex;
+    auto smutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
+    auto hmutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
+
+
+    uint hashSize = 101;
+    TypeManager[] hashArray;
+    UntypedManager untypedManager = void;
+
+    //perform a simple double hash. Should be enough, but can be optimized later
+    size_t hashFunc(size_t hash, uint i) nothrow
+    {
+        return ((hash%hashSize) + i*(hash % 7))%hashSize;
+    }
+
+    /**
+     * Search by type to find the manager for this type
+     */
+    TypeManager* getTypeManager(size_t size, const TypeInfo ti) nothrow
+    {
+        uint attempts = 0;
+
+        size_t hash = ti.toHash();
+
+        while(true)
+        {
+            auto pos = hashFunc(hash, attempts);
+
+            if(hashArray[pos].info is null)
+            {
+                hashArray[pos].__ctor(size, ti);
+
+                return &(hashArray[pos]);
+            }
+            else if(hashArray[pos].info is ti)
+            {
+                return &(hashArray[pos]);
+            }
+
+            attempts++;
+        }
+    }
+
+    /**
+     * SearchNode describes a node in a binary tree.
+     *
+     * This node is used when searching for a bucket by pointer.
+     */
+    struct SearchNode
+    {
+        TypeBucket* bucket;
+        SearchNode* left;
+        SearchNode* right;
+    }
+
+    /// This is the root node in a binary tree
+    SearchNode* root;
+
+    ///insert a SearchNode into the binary tree
+    void searchNodeInsert(SearchNode* node) nothrow
+    {
+        if(root is null)
+        {
+            root = node;
+            return;
+        }
+
+
+        SearchNode* current = root;
+
+        while(true)
+        {
+            //we can assume that the memory spans do not overlap, so if we don't
+            //traverse to the left, we much traverse to the right.
+            if(node.bucket.memory < current.bucket.memory)
+            {
+                if(current.left is null)
+                {
+                    current.left = node;
+                    return;
+                }
+
+                current = current.left;
+            }
+            else
+            {
+                if(current.right is null)
+                {
+                    current.right = node;
+                    return;
+                }
+
+                current = current.right;
+            }
+        }
+
+        assert(0);//we should never end up here!
+
+    }
+
+    ///Search the Binary tree for the bucket containing ptr
+    TypeBucket* findBucket(void* ptr) nothrow
+    {
+        //check if the pointer is in the boundaries of the heap memory
+        if(ptr < heapBottom || ptr >= heapTop)
+            return null;
+
+        SearchNode* current = root;
+        while(current !is null)
+        {
+            if(current.bucket.containsObject(ptr))
+                return current.bucket;
+
+            current = (ptr < current.bucket.memory)? current.left:current.right;
+        }
+
+        return null;
+    }
+
+
+
+    //recursive function for finalizing all buckets in the binary tree
+    void finalizeBuckets(SearchNode* node)
+    {
+        if(node is null)
+            return;
+
+        if(node.left !is null)
+            finalizeBuckets(node.left);
+        if(node.right !is null)
+            finalizeBuckets(node.right);
+
+        node.bucket.dtor();
+    }
+
+
 
     /**
      * Initialize the GC based on command line configuration.
@@ -93,9 +282,133 @@ class TypedGC : GC
             return;
 
         auto instance = cast(TypedGC) gc;
-        instance.__dtor();
-        instance.Dtor();
+        destroy(instance);
         cstdlib.free(cast(void*) instance);
+
+        debug
+        {
+            import core.stdc.stdio;
+            printf("There were %d mem_maps and %d mem_unmaps\n",
+                    mem_maps, mem_unmaps);
+
+            printf("Heap use at exit: %d\n\n", mem_mappedSize-mem_unmappedSize);
+
+            printf("press enter to continue...\n");
+            getchar();
+        }
+    }
+
+    /**
+     * MemoryChunk describes a chunk of memory obtained directly from the OS.
+     */
+    struct MemoryChunk
+    {
+        /// The start of the memory this chunk describes.
+        void* start;
+        /// The size of the MemoryChunk.
+        size_t chunkSize;
+        /// Where in the chunk to pop memory from when allocating.
+        void* offset;
+        /// A reference to the next chunk.
+        //(used to avoid an additional structure for making a linked list)
+        MemoryChunk* nextChunk;
+
+        /**
+         * MemoryChunk constructor.
+         *
+         * Initializes this chunk with new memory from the OS
+         */
+        this(size_t size) nothrow
+        {
+            chunkSize = size;
+            start = os_mem_map(chunkSize);
+            if (start is null)
+                onOutOfMemoryErrorNoGC;
+            offset = start;
+            nextChunk = null;
+        }
+        ~this()
+        {
+            os_mem_unmap(start, chunkSize);
+        }
+    }
+
+    /**
+     * System Alloc.
+     *
+     * This is used to allocate for internal structures. It is assumed to never fail
+     * for 2 reasons:
+     *  1. There is plenty of memory for the system to use internally. We should
+     *     always have enough.
+     *  2. The memory usage for a program should eventually hit a peak. Given enough
+     *     time, there will be plenty of storage space after a collection to not
+     *     warrant creating more internal objects.
+     *
+     * The System Alloc is designed to be thread safe.
+     */
+    void* salloc(size_t size) nothrow
+    {
+        smutex.lock();
+        scope (exit)
+            smutex.unlock();
+
+        void* oldOffset = systemMemory.offset;
+        systemMemory.offset += size;
+        debug
+        {
+            //shouldn't happen, but still check for it in debug during testing
+            if (systemMemory.offset > systemMemory.start + systemMemory.chunkSize)
+                onInvalidMemoryOperationError();
+        }
+
+        return oldOffset;
+    }
+
+    /**
+     * Heap Alloc.
+     *
+     * This is used to get GC managed memory for new buckets to use. This allocator
+     * is lazy in the sense that if it doesn't have enough room in one memory chunk
+     * to fulfill an allocation, it makes a new one.
+     *
+     * This can/should be optimized later to avoid fragmentation.
+     *
+     * This allocation could possibly fail, and will throw an OutOfMemoryError if it
+     * does.
+     */
+    void* halloc(size_t size) nothrow
+    {
+        hmutex.lock();
+        scope (exit)
+            hmutex.unlock();
+
+        //check size of allocation? Do something special if allocating a lot?
+        //(a big object, a big array, a large amoutn of memory is reserved?)
+
+        if (currentChunk.offset + size > currentChunk.start + currentChunk.chunkSize)
+        {
+            //or something generated by a growth algorithm?
+            size_t newChunkSize = 2 * PAGE_SIZE;
+            MemoryChunk* newChunk = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
+
+            //may throw out of memory error
+            newChunk.__ctor(newChunkSize);
+
+            currentChunk.nextChunk = newChunk;
+            currentChunk = newChunk;
+
+            //adjust the heap boundaries
+            if (currentChunk.start < heapBottom)
+                heapBottom = currentChunk.start;
+
+            if (heapTop < currentChunk.start + currentChunk.chunkSize)
+                heapTop = currentChunk.start + currentChunk.chunkSize;
+
+        }
+
+        void* oldOffset = currentChunk.offset;
+        currentChunk.offset += size;
+        return oldOffset;
     }
 
     /**
@@ -103,10 +416,64 @@ class TypedGC : GC
      */
     this()
     {
+        import core.stdc.string: memset;
+
+        //smutex.init();
+        //hmutex.init();
+
+        //is this enough?
+        //should system memory actually grow?
+        systemMemory = MemoryChunk(10 * PAGE_SIZE);
+        heapMemory = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
+        heapMemory.__ctor(2 * PAGE_SIZE); //is this enough to start?
+        currentChunk = heapMemory;
+
+        heapBottom = currentChunk.start;
+        heapTop = currentChunk.start + currentChunk.chunkSize;
+
+        TypeBucket._gc = this;
+        TypeManager._gc = this;
+        UntypedManager._gc = this;
+
+        //calculate how much memory for hash
+        uint numberOfPages = 1;
+        while(hashSize*TypeManager.sizeof > numberOfPages*PAGE_SIZE)
+            numberOfPages++;
+
+
+        //keep this to free memory later
+        size_t hashMemorySize = numberOfPages*PAGE_SIZE;
+        void* memory = os_mem_map(hashMemorySize);
+
+        //pretend the memory is actually an array
+        hashArray = (cast(TypeManager*)memory)[0 .. hashSize];
+        memset(memory, 0, hashSize*TypeManager.sizeof);
+
+        untypedManager.initialize();
     }
+
     ~this()
     {
-        buckets.dtor();
+
+        finalizeBuckets(root);
+
+        while(heapMemory !is null)
+        {
+            os_mem_unmap(heapMemory.start, heapMemory.chunkSize);
+            heapMemory = heapMemory.nextChunk;
+        }
+
+
+        //calculate how much memory for hash
+        uint numberOfPages = 1;
+        while(hashSize*TypeManager.sizeof > numberOfPages*PAGE_SIZE)
+            numberOfPages++;
+
+        //keep this to free memory later
+        size_t hashMemorySize = numberOfPages*PAGE_SIZE;
+
+        os_mem_unmap(hashArray.ptr, hashMemorySize);
+
         roots.reset();
         ranges.reset();
     }
@@ -114,9 +481,9 @@ class TypedGC : GC
     /**
      * Destructor for the Typed GC.
      */
-    void Dtor()//can I remove this?
+    void Dtor() //can I remove this?
     {
-        
+
     }
 
     /**
@@ -147,11 +514,6 @@ class TypedGC : GC
         //lock things
         //disable threads
         thread_suspendAll();
-
-        buckets.max = cast(void*)0;
-        buckets.min = cast(void*)size_t.max;
-
-        buckets.findMaxMin(buckets.min, buckets.max);
 
         //prepare for scanning
         //prepare();
@@ -214,12 +576,7 @@ class TypedGC : GC
 
         //do a check somewhere
 
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return 0;
-
-        return bucket.getAttr(p);
+        return 0;
     }
 
     /**
@@ -238,13 +595,8 @@ class TypedGC : GC
      */
     uint setAttr(void* p, uint mask) nothrow
     {
-
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return 0;
-
-        return bucket.setAttr(p, mask);
+        //p must point to the base of an object
+        return 0;
     }
 
     /**
@@ -263,12 +615,7 @@ class TypedGC : GC
      */
     uint clrAttr(void* p, uint mask) nothrow
     {
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return 0;
-
-        return bucket.clrAttr(p, mask);
+        return 0;
     }
 
     /**
@@ -287,11 +634,14 @@ class TypedGC : GC
      */
     void* malloc(size_t size, uint bits, const TypeInfo ti) nothrow
     {
-        TypeBucket* typeBucket = buckets.retrieve(size, ti);
+        if(ti is null)
+        {
+            return untypedManager.alloc(size, bits);
+        }
 
-        //will need more info during actual allocation
+        TypeManager* type = getTypeManager(size, ti);
 
-        return typeBucket.alloc(bits);
+        return type.alloc(bits);
     }
 
     /**
@@ -311,10 +661,25 @@ class TypedGC : GC
     BlkInfo qalloc(size_t size, uint bits, const TypeInfo ti) nothrow
     {
         BlkInfo retval;
-        retval.base = malloc(size, bits, ti);
-        retval.size = size;
-        retval.attr = bits;
-        return retval;
+
+        if(ti is null)
+        {
+            auto type = untypedManager.alloc(size, bits);
+        }
+
+        TypeManager* type = getTypeManager(size, ti);
+
+
+        return type.qalloc(bits);
+
+        //auto sizey = type.allocateNode.bucket.objectSize;
+        //retval.size = sizey;
+
+
+        //retval.base = type.alloc(bits);
+        
+        //retval.attr = bits;
+        //return retval;
     }
 
     /**
@@ -367,14 +732,15 @@ class TypedGC : GC
     void* realloc(void* p, size_t size, uint bits, const TypeInfo ti) nothrow
     {
 
-        TypeBucket* typeBucket = buckets.retrieve(size, ti);
+        //TypeBucket* typeBucket = buckets.retrieve(size, ti);
+        //
+        //p = cstdlib.realloc(p, size);
+        //
+        //if (size && p is null)
+        //onOutOfMemoryErrorNoGC();
+        //return p;
 
-
-        p = cstdlib.realloc(p, size);
-
-        if (size && p is null)
-            onOutOfMemoryErrorNoGC();
-        return p;
+        return null;
     }
 
     /**
@@ -398,7 +764,6 @@ class TypedGC : GC
         //find p, check if extendable?
 
         //if so, extend?
-
 
         //only types that are allowed to be extendable:
         //arrays
@@ -435,13 +800,6 @@ class TypedGC : GC
      */
     void free(void* p) nothrow
     {
-
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return;
-
-        bucket.free(p);
     }
 
     /**
@@ -457,12 +815,7 @@ class TypedGC : GC
      */
     void* addrOf(void* p) nothrow
     {
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return null;
-
-        return bucket.addrOf(p);
+        return null;
     }
 
     /**
@@ -478,13 +831,7 @@ class TypedGC : GC
     size_t sizeOf(void* p) nothrow
     {
         //need to check if interior pointer first
-
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return 0;
-
-        return bucket.objectSize;
+        return 0;
     }
 
     /**
@@ -501,7 +848,7 @@ class TypedGC : GC
      */
     BlkInfo query(void* p) nothrow
     {
-        TypeBucket* bucket = buckets.retrieve(p);
+        auto bucket = findBucket(p);
 
         if(bucket is null)
             return BlkInfo.init;
@@ -634,7 +981,7 @@ class TypedGC : GC
      */
     void runFinalizers(in void[] segment) nothrow
     {
-        
+
     }
 
     /**
@@ -648,511 +995,618 @@ class TypedGC : GC
         return false;
     }
 
-    void mark(void *pbot, void *ptop) scope nothrow
+    void mark(void* pbot, void* ptop) scope nothrow
     {
         import core.stdc.stdio;
-        void **p1 = cast(void **)pbot;
-        void **p2 = cast(void **)ptop;
-
-        for(; p1 < p2; p1++)
-        {
-            auto pointer = *p1;
-            if(pointer < buckets.min || pointer >= buckets.max)
-                continue;
-
-            printf("pointer = %X\n", pointer);
-
-            //find out if this points to something of ours
-            auto bucket = buckets.retrieve(pointer);
-            if(bucket is null)
-                continue;
-
-            //test if interior pointer
-
-            if(!bucket.testMarkAndSet(pointer))
-            {
-                //printf("pointer = %X\n", p1);
-
-                printf("Marking a new pointer.\n");
-
-                uint attr = bucket.getAttr(pointer);
-                uint noScan = BlkAttr.NO_SCAN;
-
-                if((bucket.getAttr(pointer) & BlkAttr.NO_SCAN))
-                    continue;
-
-                uint pointerMap = bucket.pointerMap;
-                void* start = pointer;
-
-                while(pointerMap != 0)
-                {
-                    uint pos = bsf(pointerMap);
-
-                    pointerMap &= ~(1 << pos);
-                    void* ptr = pointer + pos*size_t.sizeof;
-
-                    printf("Internal ptr to scan: %X\n", ptr);
-
-                }
-            }
-        }
-
 
     }
 
     int isMarked(void* p) scope nothrow
     {
-        TypeBucket* bucket = buckets.retrieve(p);
-
-        if(bucket is null)
-            return IsMarked.unknown;
-
-        return bucket.isMarked(p)?IsMarked.yes:IsMarked.no;
-    }
-}
-
-/**
- * A quick binary tree for getting things up and running.
- *
- * This binary tree is special in that the retrieve function inserts if a given
- * bucket isn't contained. In this way, we always assume that we have a bucket
- * ready.
- */
-struct BinTree
-{
-    private struct Node
-    {
-        TypeBucket* bucket;
-        Node* left;
-        Node* right;
-    }
-    private Node* root = null;
-
-    void* min;
-    void* max;
-
-    void dtor()
-    {
-        if(root is null)
-            return;
-
-        dtorHelper(root);
+        //return bucket.isMarked(p)?IsMarked.yes:IsMarked.no;
+        return 0;
     }
 
-    ///Retrieve the TypeBucket used to allocate a specific type.
-    TypeBucket* retrieve(size_t size, const TypeInfo ti) nothrow
+    /**
+     *  TypeManager manages the allocations for a specific type.
+     */
+    struct TypeManager
     {
+        static TypedGC _gc;
 
-        //what if ti is null?
-        //will need to considedr this (for GC allocation of raw memory)
-
-        if(root is null)
+        struct TypeNode
         {
-            root = createNewNode(size, ti);
-
-            return root.bucket;
+            TypeBucket* bucket;
+            TypeNode* next;
         }
 
-        return retrieveHelper(root, size, ti);
-    }
+        const TypeInfo info; //type info reference for hash comparison
+        size_t pointerMap;
+        size_t objectSize;
+        ubyte ObjectsPerBucket;
+        bool isArrayType;
 
-    ///Retrieve the TypeBucket used to allocate a specific type.
-    TypeBucket* retrieve(void* p) nothrow
-    {
-        if(root is null)
-            return null;
+        //Mutex mutex;
+        auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
 
-        return retrieveHelper(root, p);
-    }
+        /// Linked list of all buckets managed for this type
+        TypeNode* buckets;
+        /// Bucket to be used when performing allocations (to avoid searching)
+        TypeNode* allocateNode;
 
-    /// A helper function for the binary tree traversal and alloc of new nodes.
-    private TypeBucket* retrieveHelper(Node* node, size_t size,
-                                       const TypeInfo ti) nothrow
-    {
-        //is each hash actually unique?
-        //assume yes for now, and fix during design period (hash that shit)
-
-        if(node.bucket.id == ti.toHash())
+        /**
+         * Construct a new TypeManager.
+         *
+         * This constructor also creates an empty bucket for allocations.
+         */
+        this(size_t objectSize, const TypeInfo ti) nothrow
         {
-            return node.bucket;
-        }
-        else if(node.bucket.id < ti.toHash())
-        {
-            if(node.right is null)
+            info = ti;
+            //Check to see if the type info describes an array type
+            //this cast will fail if ti doesn't describe an array
+            isArrayType = (cast(TypeInfo_Array) ti !is null) ? true : false;
+
+            if(isArrayType)
             {
-                //create and return
+                //get the type info for the type the array holds
+                bool valueIsPointerType;
+                auto tinext = ti.next;
+                this.objectSize = tinext.tsize;
 
-                node.right = createNewNode(size, ti);
-                return node.right.bucket;
+                //check if the type of the array is a pointer or reference type
+                if((cast(TypeInfo_Pointer) tinext !is null) ||
+                   (cast(TypeInfo_Class) tinext !is null))
+                {
+                    //if the type is a pointer or reference type, we will always
+                    //have one indirection to the actual object
+                    pointerMap = 1;
+                }
+                else
+                {
+                    auto rtInfo = cast(const(size_t)*) tinext.rtInfo();
+                    if (rtInfo !is null)
+                    {
+                        //copy the pointer bitmap embedded in the run time info
+                        pointerMap = rtInfo[1];
+                    }
+                }
+
+
+                ObjectsPerBucket = 1;
+
+
+
+                CreateNewArrayBucket(buckets, objectSize);
+            }
+            else
+            {
+                auto rtInfo = cast(const(size_t)*) ti.rtInfo();
+                if (rtInfo !is null)
+                {
+                    //copy the pointer bitmap embedded in the run time info
+                    pointerMap = rtInfo[1];
+                }
+                this.objectSize = objectSize;
+                ObjectsPerBucket = getObjectsPerBucket(objectSize);
+
+                //initialize the linked list with a node and bucket
+                createNewBucket(buckets);
             }
 
-            return retrieveHelper(node.right, size, ti);
-        }
-        else
-        {
-            if(node.left is null)
-            {
-                //create and return
 
-                node.left = createNewNode(size, ti);
-                return node.left.bucket;
+
+
+            //mutex.init();
+        }
+
+
+        ubyte getObjectsPerBucket(size_t objectSize) nothrow
+        {
+            if(objectSize < 64)      //small
+            {
+                return 32;
+            }
+            else if(objectSize < 128)//medium
+            {
+                return 16;
+            }
+            else if(objectSize < 256)//big
+            {
+                return 8;
+            }
+            else if(objectSize < 512)//very big
+            {
+                return 4;
+            }
+            else                     //HUGE
+            {
+                return 1;
+            }
+        }
+
+        /**
+         * Creates a new TypeBucket for this type and initializes it.
+         *
+         * In addition to creating the bucket itself, this function creates a
+         * TypeNode for the new bucket and assigns it to allocateNode. It also
+         * inserts a new SearchNode containing the new bucket into the search
+         * tree.
+         *
+         * Params:
+         *  node = A reference to the end of the linked list.
+         */
+        void createNewBucket(ref TypeNode* node) nothrow
+        {
+            //create TypeNode
+            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node.next = null;
+
+            //Create SearchNode
+            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            newSearchNode.left = null;
+            newSearchNode.right = null;
+
+            //create TypeBucket
+            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+
+            //initialize the bucket
+            *(newBucket) = TypeBucket(objectSize,ObjectsPerBucket, pointerMap);
+
+
+            node.bucket = newBucket;
+            newSearchNode.bucket = newBucket;
+
+            allocateNode = node;
+            _gc.searchNodeInsert(newSearchNode);
+        }
+
+
+
+        /**
+         * Creates a new TypeBucket for an array and initializes it.
+         *
+         * In addition to creating the bucket itself, this function creates a
+         * TypeNode for the new bucket and assigns it to allocateNode. It also
+         * inserts a new SearchNode containing the new bucket into the search
+         * tree.
+         *
+         * Params:
+         *  node = A reference to the end of the linked list.
+         *  size = the requested size of memory for the array.
+         */
+        void CreateNewArrayBucket(ref TypeNode* node, size_t size) nothrow
+        {
+            //create TypeNode
+            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node.next = null;
+
+            //Create SearchNode
+            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            newSearchNode.left = null;
+            newSearchNode.right = null;
+
+            //create TypeBucket
+            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+
+            //calulate the full size of the array. This adds length to the array
+            //to make it appendable
+
+            //array size = requested size + (approximate length * 0.3)
+            size_t arraySize = cast(size_t)(size + objectSize* cast(size_t)((size/objectSize) * 0.3f));
+
+            //initialize the bucket
+            *(newBucket) = TypeBucket(arraySize,ObjectsPerBucket, pointerMap);
+
+
+            node.bucket = newBucket;
+            newSearchNode.bucket = newBucket;
+
+            allocateNode = node;
+            _gc.searchNodeInsert(newSearchNode);
+        }
+
+
+        //finds a bucket and grabs memory from it
+        void* alloc(uint bits) nothrow
+        {
+            mutex.lock();
+            //will call mutex.unlock() at the end of the scope
+            scope (exit)
+                mutex.unlock();
+
+            //make sure we have a bucket that can store new objects
+            while (allocateNode.bucket.isFull())
+            {
+                if (allocateNode.next is null)
+                {
+                    //creates a new TypeNode and will assign it to allocateNode
+                    createNewBucket(allocateNode.next);
+                    break;
+                }
+
+                allocateNode = allocateNode.next;
+            }
+            int test = 0;
+            return allocateNode.bucket.alloc(bits);
+        }
+
+
+        BlkInfo qalloc(uint bits) nothrow
+        {
+            BlkInfo ret;
+            ret.base = alloc(bits);
+            ret.size = allocateNode.bucket.objectSize;
+            ret.attr = bits;
+
+            return ret;
+        }
+
+    }
+
+    /**
+     *  UntypedManager manages the allocations for all untyped data.
+     */
+    struct UntypedManager
+    {
+        static TypedGC _gc;
+
+        struct TypeNode
+        {
+            TypeBucket* bucket;
+            TypeNode* next;
+        }
+
+        Mutex mutex;
+
+        /// Linked list of all buckets managed for this type
+        TypeNode* buckets;
+        /// Bucket to be used when performing allocations (to avoid searching)
+        TypeNode* allocateNode;
+
+        /**
+         * Construct a new TypeManager.
+         */
+        void initialize() nothrow
+        {
+            mutex.init();
+        }
+
+
+        /**
+         * Creates a new TypeBucket for this type and initializes it.
+         *
+         * In addition to creating the bucket itself, this function creates a
+         * TypeNode for the new bucket and assigns it to allocateNode. It also
+         * inserts a new SearchNode containing the new bucket into the search
+         * tree.
+         *
+         * Params:
+         *  node = A reference to the end of the linked list.
+         */
+        void createNewBucket(ref TypeNode* node, size_t size, uint bits) nothrow
+        {
+            //create TypeNode
+            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node.next = null;
+
+            //Create SearchNode
+            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            newSearchNode.left = null;
+            newSearchNode.right = null;
+
+            //create TypeBucket
+            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+
+            //if(bits & BlkAttr.APPENDABLE)
+
+            //initialize the bucket
+            *(newBucket) = TypeBucket(size,1, size_t.max);
+
+
+            node.bucket = newBucket;
+            newSearchNode.bucket = newBucket;
+
+            allocateNode = node;
+            _gc.searchNodeInsert(newSearchNode);
+        }
+
+        //finds a bucket and grabs memory from it
+        void* alloc(size_t size, uint bits) nothrow
+        {
+            mutex.lock();
+            //will call mutex.unlock() at the end of the scope
+            scope (exit)
+                mutex.unlock();
+
+
+            if(buckets is null)
+            {
+                createNewBucket(buckets,size, bits);
+            }
+            else
+            {
+                createNewBucket(allocateNode.next, size, bits);
             }
 
-            return retrieveHelper(node.left, size, ti);
+
+            return allocateNode.bucket.alloc(bits);
         }
 
     }
 
-    /// A helper function for the binary tree traversal to find the bucket containing p.
-    private TypeBucket* retrieveHelper(Node* node, void* p) nothrow
+
+    /**
+     * TypeBucket is a structure that defines a bucket holding a single type.
+     *
+     * This structure uses information about the type in order to perform some cool
+     * things.
+     */
+    struct TypeBucket
     {
+        static TypedGC _gc;
 
-        //wow, this is really bad
-        //will be better when I have more time to think about it
-
-        //currently no way to narrow it down, but will probably want to do some
-        //kind of tree
-
-        //possible to narrow it down using the pointer value?
-        //Similar to hashing?
-
-        if(node is null)
-            return null;
-
-        TypeBucket* bucket = null;
-
-
-        if(node.bucket.containsObject(p))
-            return node.bucket;
-
-        bucket = retrieveHelper(node.left, p);
-
-        if(!bucket)
-            bucket = retrieveHelper(node.right, p);
-
-        if(bucket)
-            return bucket;
-
-        return null;
-    }
-
-    private Node* createNewNode(size_t size, const TypeInfo ti)
-        nothrow
-    {
-        Node* newNode = cast(Node*)cstdlib.malloc(Node.sizeof);
-
-        //size of the bucket plus size of 32 objects
-        void* memory = cstdlib.malloc(TypeBucket.sizeof + size*32);
-
-        newNode.bucket = cast(TypeBucket*)memory;
-        memory+=TypeBucket.sizeof;
-
-        newNode.bucket.initialize(size, ti, memory);
-
-        newNode.left = null;
-        newNode.right = null;
-
-        return newNode;
-    }
-
-    private void dtorHelper(Node* node)
-    {
-        if(node is null)
-            return;
-
-        dtorHelper(node.left);
-        dtorHelper(node.right);
-
-        node.bucket.dtor();
-
-        cstdlib.free(node.bucket);
-        cstdlib.free(node);
-    }
-
-    void findMaxMin(ref void* min, ref void* max) nothrow
-    {
-        fmmHelper(root, min, max);
-    }
-
-    private void fmmHelper(Node* node, ref void* min, ref void* max) nothrow
-    {
-        if(node is null)
-            return;
-
-        if(min>node.bucket.memory)
-            min = node.bucket.memory;
-
-        if(max < node.bucket.memory+32*node.bucket.objectSize)
-            max = node.bucket.memory+32*node.bucket.objectSize;
-
-        fmmHelper(node.left, min, max);
-        fmmHelper(node.right, min, max);
-    }
-
-}
-
-
-/**
- * TypeBucket is a structure that defines a bucket holding a single type.
- *
- * This structure uses information about the type in order to perform some cool
- * things.
- */
-struct TypeBucket
-{
-    /// The number of objects held by the bucket
-    static immutable ObjectsPerBucket = 32;
+        /// The number of objects held by the bucket
     private:
-        size_t id;//identifier
-        ubyte objectSize;//size of each object
-        uint freeMap;//the bitmap of all free objects in this bucket
-        uint markMap;//the bitmap of all object that have been found during a collection
-        uint pointerMap;//the bitmap describing what words are pointers
-        uint[ObjectsPerBucket] attributes;//the attributes per object
-        TypeBucket* nextBucket; //the next bucket of the same type (linked list style)
-
-        //one of these might be better than the other, we'll see
         void* memory; //a pointer to the memory used by this bucket to hold the objects
-        void*[] objects; //a slice of the memory for easy access to each object
-
-    public alias id this;
+        size_t objectSize; //size of each object
+        size_t pointerMap; //the bitmap describing what words are pointers
+        ubyte* attributes; //the attributes per object
+        uint freeMap; //the bitmap of all free objects in this bucket
+        uint markMap; //the bitmap of all object that have been found during a collection
+        ubyte numberOfObjects;
+        bool arrayType;
+        //space for two more bytes for this allignment
 
     public:
 
-    /**
-     * Initializes the Type bucket.
-     *
-     * This function is called instead of the constructor because we are using
-     * malloc to get the memory for this object.
-     */
-    void initialize(size_t size, const TypeInfo ti, void* memory) nothrow
-    {
-        // do the stuff
-        id = ti.toHash();
-
-        if(TypeInfo_Array c = cast(TypeInfo_Array)ti) //works, so use it
+        /// TypeBucket Constructor
+        this(size_t size, ubyte numberOfObjects, size_t pointerMap) nothrow
         {
-            int i = 0;
+            objectSize = size;
+            this.numberOfObjects = numberOfObjects;
+
+            freeMap = 0;
+            markMap = 0;
+
+            this.pointerMap = pointerMap;
+
+
+            memory = _gc.halloc(numberOfObjects*objectSize);
+            attributes = cast(ubyte*)_gc.salloc(ubyte.sizeof * numberOfObjects);
         }
 
-
-        uint hash = id % 101;
-
-        //this is ok for now because we will make sure objectSize is large enough
-        //to hold the actual size of an object later
-        objectSize = cast(typeof(objectSize))size;
-
-        freeMap = 0;
-        markMap = 0;
-
-        auto rtInfo = cast(const(size_t)*)ti.rtInfo();
-        if(rtInfo !is null)
+        /**
+         * Cleans up the object held by the bucket.
+         *
+         * Since the memory the bucket uses is allocated elsewhere, it does not free
+         * it.
+         */
+        void dtor()
         {
-            //copied from previos work
-            //pointerBitmapSize = cast(ubyte)(*rtInfo)/(void*).sizeof;
+            uint numObjs = numberOfObjects;
 
-            rtInfo++;
-
-            //the pointer map can be scanned using a bsf instruction
-            pointerMap = cast(uint)rtInfo[0];
-            int i = 0;
-        }
-
-        nextBucket = null;
-
-        this.memory = memory;
-    }
-
-    /**
-     * Cleans up the object held by the bucket.
-     *
-     * Since the memory the bucket uses is allocated elsewhere, it does not free
-     * it.
-     */
-    void dtor()
-    {
-        while(freeMap != 0)
-        {
-            auto pos = bsf(freeMap);
-
-            if(attributes[pos] & BlkAttr.FINALIZE ||
-               attributes[pos] & BlkAttr.STRUCTFINAL)
+            while (freeMap != 0)
             {
-                rt_finalizeFromGC(memory + pos*objectSize, objectSize,
-                                  attributes[pos]);
+                auto pos = bsf(freeMap);
+
+
+                uint attr = attributes[pos];
+
+
+                if (attributes[pos] & BlkAttr.FINALIZE || attributes[pos] & BlkAttr.STRUCTFINAL)
+                {
+                    rt_finalizeFromGC(memory + pos * objectSize, objectSize, attributes[pos]);
+                }
+
+                freeMap &= ~(1 << pos);
+            }
+        }
+
+        /**
+         * Checks the freemap to see if this bucket is full.
+         */
+        bool isFull() nothrow
+        {
+            final switch(numberOfObjects)
+            {
+                case 32:
+                    return freeMap == uint.max;
+                case 16:
+                    return freeMap == cast(uint)ushort.max;
+                case 8:
+                    return freeMap == cast(uint)ubyte.max;
+                case 4:
+                    return freeMap == cast(uint)0b1111;
+                case 1:
+                    return freeMap == cast(uint)1;
+            }
+        }
+        /**
+         * Provide some memory for the GC to create a new object.
+         */
+        void* alloc(uint bits) nothrow
+        {
+            //assume we're in a correct state to allocate
+
+            auto pos = bsf(cast(size_t)~freeMap);
+
+            //Current attributes use at most 6 bits, so we can use a smaller
+            //type internally
+            attributes[pos] = cast(ubyte) bits;
+            freeMap |= (1 << pos);
+
+            void* actualLocation = memory + pos * objectSize;
+
+            return actualLocation;
+        }
+
+        /**
+         * Run the finalizer on the object stored at p, and then sets it as free in
+         * the freeMap.
+         *
+         * This function assumes that the pointer is within this bucket.
+         */
+        void free(void* p) nothrow
+        {
+
+            //find the position, run finalizer, clear bits
+
+            auto pos = (p - memory) / objectSize;
+
+            //check if needs finalization
+            if (attributes[pos] & BlkAttr.FINALIZE || attributes[pos] & BlkAttr.STRUCTFINAL)
+            {
+                rt_finalizeFromGC(memory + pos * objectSize, objectSize, attributes[pos]);
             }
 
             freeMap &= ~(1 << pos);
         }
-    }
 
-    /**
-     * Provide some memory for the GC to create a new object.
-     */
-    void* alloc(uint bits) nothrow
-    {
-        //assume we're in a correct state to allocate
-
-        int objectPosition = bsf(cast(size_t)~freeMap);
-
-        attributes[objectPosition] = bits;
-        freeMap |= (1<<objectPosition);
-
-        void* actualLocation = memory + objectPosition*objectSize;
-
-        return actualLocation;
-    }
-
-    /**
-     * Run the finalizer on the object stored at p, and then sets it as free in
-     * the freeMap.
-     *
-     * This function assumes that the pointer is within this bucket.
-     */
-    void free(void* p) nothrow
-    {
-
-        //find the position, run finalizer, clear bits
-
-        uint objectPosition = cast(uint)(p - memory)/objectSize;
-
-        //check if needs finalization
-        if(attributes[objectPosition] & BlkAttr.FINALIZE ||
-           attributes[objectPosition] & BlkAttr.STRUCTFINAL)
+        void* addrOf(void* p) nothrow
         {
-            rt_finalizeFromGC(memory + objectPosition*objectSize, objectSize,
-                          attributes[objectPosition]);
+            //assume that p is one of these objects
+            return memory + ((p - memory) / objectSize) * objectSize;
         }
 
+        BlkInfo query(void* p) nothrow
+        {
+            BlkInfo ret;
 
-        freeMap &= ~(1 << objectPosition);
-    }
+            auto pos = (p - memory) / objectSize;
 
-    void* addrOf(void* p) nothrow
-    {
-        //assume that p is one of these objects
-        return memory + ((p - memory)/objectSize) * objectSize;
-    }
+            ret.base = memory + pos * objectSize;
+            ret.size = objectSize;
+            ret.attr = attributes[pos];
 
-    BlkInfo query(void* p) nothrow
-    {
-        BlkInfo ret;
+            return ret;
+        }
 
-        uint objectPosition = cast(uint)(p - memory)/objectSize;
+        void sweep() nothrow
+        {
+            uint markBit = 1;
 
-        ret.base = memory + objectPosition*objectSize;
-        ret.size = objectSize;
-        ret.attr = attributes[objectPosition];
+            //run finalizers for all non-marked objects (if they need it)
 
-        return ret;
-    }
+            //mark those objects as freed
+        }
 
-    void sweep() nothrow
-    {
-        uint markBit = 1;
+        /**
+         * Checks if a pointer lies within a chunk of memory that has been marked
+         * during a GC collection.
+         *
+         * This function assumes that the pointer is within this bucket.
+         *
+         * Returns:
+         *  True if p is marked, otherwise returns false.
+         */
+        bool isMarked(void* p) nothrow
+        {
+            uint markBit = 1 << (p - memory) / objectSize;
 
-        //run finalizers for all non-marked objects (if they need it)
+            return (markMap & markBit) ? true : false;
+        }
 
-        //mark those objects as freed
-    }
+        /**
+         * Check if the mark bit is set for this pointer, and sets it if not set.
+         *
+         * This function assumes that the pointer is within this bucket.
+         *
+         * Returns:
+         *  True if the pointer was already marked, false if it wasn't.
+         */
+        bool testMarkAndSet(void* p) nothrow
+        {
+            uint markBit = 1 << (p - memory) / objectSize;
 
-    /**
-     * Checks if a pointer lies within a chunk of memory that has been marked
-     * during a GC collection.
-     *
-     * This function assumes that the pointer is within this bucket.
-     *
-     * Returns:
-     *  True if p is marked, otherwise returns false.
-     */
-    bool isMarked(void* p) nothrow
-    {
-        uint markBit = 1 << (p - memory)/objectSize;
+            if (markMap & markBit)
+                return true;
 
-        return (markMap & markBit)?true:false;
-    }
-
-    /**
-     * Check if the mark bit is set for this pointer, and sets it if not set.
-     *
-     * This function assumes that the pointer is within this bucket.
-     *
-     * Returns:
-     *  True if the pointer was already marked, false if it wasn't.
-     */
-    bool testMarkAndSet(void* p) nothrow
-    {
-        uint markBit = 1 << (p - memory)/objectSize;
-
-        if(markMap & markBit)
-            return true;
-
-        markMap |= markBit;
-        return false;
-    }
-
-    /**
-     * Checks to see if a pointer to something points to an object in this
-     * bucket.
-     */
-    bool containsObject(void* p) nothrow
-    {
-
-        void* bMin = memory;
-        void* bMax = memory + objectSize*ObjectsPerBucket;
-
-        if(p >= memory && p < memory + objectSize*ObjectsPerBucket)
-            return true;
-
-        if(nextBucket is null)
+            markMap |= markBit;
             return false;
-
-        return nextBucket.containsObject(p);
-    }
-
-    uint getAttr(void* p) nothrow
-    {
-        return attributes[(p - memory)/objectSize];
-    }
-
-    uint setAttr(void* p, uint mask) nothrow
-    {
-        attributes[(p - memory)/objectSize] |= mask;
-
-        return attributes[(memory - p)/objectSize];
-    }
-
-    uint clrAttr(void* p, uint mask) nothrow
-    {
-        attributes[(p - memory)/objectSize] &= ~mask;
-
-        return attributes[(memory - p)/objectSize];
-    }
-
-
-    auto getPointers(void* p) nothrow
-    {
-        struct PointerIterator
-        {
-            void* start;
-            size_t pMap;
-
-
-            int opApply(scope int delegate(void*) nothrow dg) nothrow
-            {
-                int result = 0;
-
-                while(pMap !=0)
-                {
-                    auto pos = bsf(pMap);
-
-                    result = dg(p + pos*size_t.sizeof);
-                }
-
-                return result;
-            }
         }
 
-        return PointerIterator(p, pointerMap);
+        /**
+         * Checks to see if a pointer to something points to an object in this
+         * bucket.
+         */
+        bool containsObject(void* p) nothrow
+        {
+            if (p >= memory && p < memory + objectSize * numberOfObjects)
+                return true;
+
+            return false;
+        }
+
+        uint getAttr(void* p) nothrow
+        {
+            return attributes[(p - memory) / objectSize];
+        }
+
+        uint setAttr(void* p, uint mask) nothrow
+        {
+            attributes[(p - memory) / objectSize] |= mask;
+
+            return attributes[(memory - p) / objectSize];
+        }
+
+        uint clrAttr(void* p, uint mask) nothrow
+        {
+            attributes[(p - memory) / objectSize] &= ~mask;
+
+            return attributes[(memory - p) / objectSize];
+        }
+    }
+
+
+}
+
+/**
+ * The Mutex structure is a wrapper around the runtime class Mutex.
+ *
+ * Because we cannot use the GC to initialize a class, this wraper handles
+ * the construction and destruction of the memory.
+ *
+ * Mutexes are created with the c std malloc because they need to be used by
+ * the GC's allocators and cannot be allocated by them.
+ */
+struct Mutex
+{
+    corelib.Mutex m_mutex;
+    void* p;
+
+    ~this()
+    {
+        void* p2 = cast(void*) m_mutex;
+        
+        destroy(m_mutex);
+
+
+
+        cstdlib.free(cast(void*) m_mutex); //not freeing all the memory?
+    }
+
+    //initializes the mutex
+    void init() nothrow
+    {
+        import core.stdc.string: memcpy;
+
+         p = cstdlib.malloc(__traits(classInstanceSize, corelib.Mutex));
+        auto init = typeid(corelib.Mutex).initializer();
+
+        m_mutex = cast(corelib.Mutex) memcpy(p, init.ptr, init.length);
+
+        m_mutex.__ctor(); //call the constructor explicitly
+    }
+
+    void lock() nothrow
+    {
+        m_mutex.lock_nothrow();
+    }
+
+    void unlock()  nothrow
+    {
+        m_mutex.unlock_nothrow();
     }
 }
+
+
