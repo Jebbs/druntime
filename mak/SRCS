@@ -300,6 +300,9 @@ SRCS=\
 	src\gc\impl\manual\gc.d \
 	src\gc\impl\proto\gc.d \
 	src\gc\impl\typed\gc.d \
+	src\gc\impl\typed\systemalloc.d \
+	src\gc\impl\typed\typebucket.d \
+	src\gc\impl\typed\typemanager.d \
 	\
 	src\rt\aApply.d \
 	src\rt\aApplyR.d \
