@@ -109,7 +109,7 @@ class TypedGC : GC
 
     uint hashSize = 101;
     TypeManager[] hashArray;
-    UntypedManager untypedManager = void;
+    UntypedManager untypedManager;
 
     //perform a simple double hash. Should be enough, but can be optimized later
     size_t hashFunc(size_t hash, uint i) nothrow
@@ -155,6 +155,8 @@ class TypedGC : GC
         TypeBucket* bucket;
         SearchNode* left;
         SearchNode* right;
+
+        int height;
     }
 
     /// This is the root node in a binary tree
@@ -169,37 +171,121 @@ class TypedGC : GC
             return;
         }
 
+        searchNodeInsertHelper(root, node);
+        return;
+    }
 
-        SearchNode* current = root;
 
-        while(true)
+    void searchNodeInsertHelper(ref SearchNode* current, SearchNode* node) nothrow
+    {
+        if( node.bucket.memory < current.bucket.memory)
         {
-            //we can assume that the memory spans do not overlap, so if we don't
-            //traverse to the left, we much traverse to the right.
-            if(node.bucket.memory < current.bucket.memory)
+            if(current.left is null)
             {
-                if(current.left is null)
-                {
-                    current.left = node;
-                    return;
-                }
-
-                current = current.left;
+                current.left = node;
+                current.left.height = 1;
             }
             else
             {
-                if(current.right is null)
-                {
-                    current.right = node;
-                    return;
-                }
-
-                current = current.right;
+                searchNodeInsertHelper(current.left, node);
+            }
+        }
+        else //we will never have duplicates
+        {
+            if(current.right is null)
+            {
+                current.right = node;
+                current.right.height = 1;
+            }
+            else
+            {
+                searchNodeInsertHelper(current.right, node);
             }
         }
 
-        assert(0);//we should never end up here!
 
+        int leftHeight = getHeight(current.left);
+        int rightHeight = getHeight(current.right);
+
+        current.height = ((leftHeight>rightHeight)?leftHeight:rightHeight) + 1;
+
+        int balance = leftHeight - rightHeight;
+
+        if(balance > 1)
+        {
+            if(node.bucket.memory < current.left.bucket.memory)
+            {
+                //left left rotation
+                current = LLRot(current);
+                return;
+            }
+
+            //left right rotation
+            current.left  = RRRot(current.left);
+            current = LLRot(current);
+        }
+        else if(balance < -1)
+        {
+            if(node.bucket.memory < current.right.bucket.memory)
+            {
+                //right left rotation
+                current.right = LLRot(current.left);
+                current = RRRot(current);
+                return;
+            }
+            //right right rotation
+            current = RRRot(current);
+            int breaker = 0;
+        }
+
+    }
+
+    SearchNode* LLRot(SearchNode* k2) nothrow
+    {
+        SearchNode* k1 = k2.left;
+        SearchNode* y = k1.right;
+
+        k2.left = y;
+        k1.right = k2;
+
+        //height updates
+        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
+        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
+
+        int breaker = 0;
+
+        return k1;
+    }
+
+    SearchNode* RRRot(SearchNode* k2) nothrow
+    {
+        SearchNode* k1 = k2.right;
+        SearchNode* y = k1.left;
+
+        k2.right = y;
+        k1.left = k2;
+
+
+        //height updates
+        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
+        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
+
+        int breaker = 0;
+
+        return k1;
+    }
+
+    int max(int a, int b) nothrow
+    {
+        return (a>b)?a:b;
+    }
+
+    int getHeight(SearchNode* node) nothrow
+    {
+        if(node is null)
+            return 0;
+
+        return node.height;
     }
 
     ///Search the Binary tree for the bucket containing ptr
@@ -383,7 +469,7 @@ class TypedGC : GC
             hmutex.unlock();
 
         //check size of allocation? Do something special if allocating a lot?
-        //(a big object, a big array, a large amoutn of memory is reserved?)
+        //(a big object, a big array, a large amount of memory is reserved?)
 
         if (currentChunk.offset + size > currentChunk.start + currentChunk.chunkSize)
         {
@@ -418,9 +504,6 @@ class TypedGC : GC
     {
         import core.stdc.string: memset;
 
-        //smutex.init();
-        //hmutex.init();
-
         //is this enough?
         //should system memory actually grow?
         systemMemory = MemoryChunk(10 * PAGE_SIZE);
@@ -440,7 +523,6 @@ class TypedGC : GC
         while(hashSize*TypeManager.sizeof > numberOfPages*PAGE_SIZE)
             numberOfPages++;
 
-
         //keep this to free memory later
         size_t hashMemorySize = numberOfPages*PAGE_SIZE;
         void* memory = os_mem_map(hashMemorySize);
@@ -448,13 +530,10 @@ class TypedGC : GC
         //pretend the memory is actually an array
         hashArray = (cast(TypeManager*)memory)[0 .. hashSize];
         memset(memory, 0, hashSize*TypeManager.sizeof);
-
-        untypedManager.initialize();
     }
 
     ~this()
     {
-
         finalizeBuckets(root);
 
         while(heapMemory !is null)
@@ -545,7 +624,6 @@ class TypedGC : GC
      */
     void collectNoStack() nothrow
     {
-
     }
 
     /**
@@ -677,7 +755,7 @@ class TypedGC : GC
 
 
         //retval.base = type.alloc(bits);
-        
+
         //retval.attr = bits;
         //return retval;
     }
@@ -1256,7 +1334,7 @@ class TypedGC : GC
             TypeNode* next;
         }
 
-        Mutex mutex;
+        auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
 
         /// Linked list of all buckets managed for this type
         TypeNode* buckets;
@@ -1268,7 +1346,6 @@ class TypedGC : GC
          */
         void initialize() nothrow
         {
-            mutex.init();
         }
 
 
@@ -1421,6 +1498,7 @@ class TypedGC : GC
                     return freeMap == cast(uint)1;
             }
         }
+
         /**
          * Provide some memory for the GC to create a new object.
          */
@@ -1556,57 +1634,7 @@ class TypedGC : GC
             return attributes[(memory - p) / objectSize];
         }
     }
-
-
 }
 
-/**
- * The Mutex structure is a wrapper around the runtime class Mutex.
- *
- * Because we cannot use the GC to initialize a class, this wraper handles
- * the construction and destruction of the memory.
- *
- * Mutexes are created with the c std malloc because they need to be used by
- * the GC's allocators and cannot be allocated by them.
- */
-struct Mutex
-{
-    corelib.Mutex m_mutex;
-    void* p;
-
-    ~this()
-    {
-        void* p2 = cast(void*) m_mutex;
-        
-        destroy(m_mutex);
-
-
-
-        cstdlib.free(cast(void*) m_mutex); //not freeing all the memory?
-    }
-
-    //initializes the mutex
-    void init() nothrow
-    {
-        import core.stdc.string: memcpy;
-
-         p = cstdlib.malloc(__traits(classInstanceSize, corelib.Mutex));
-        auto init = typeid(corelib.Mutex).initializer();
-
-        m_mutex = cast(corelib.Mutex) memcpy(p, init.ptr, init.length);
-
-        m_mutex.__ctor(); //call the constructor explicitly
-    }
-
-    void lock() nothrow
-    {
-        m_mutex.lock_nothrow();
-    }
-
-    void unlock()  nothrow
-    {
-        m_mutex.unlock_nothrow();
-    }
-}
 
 
