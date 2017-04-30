@@ -56,14 +56,18 @@ struct MemoryChunk
 
     ~this()
     {
-        os_mem_unmap(start, chunkSize);
+        //this can happen because of how structs work when they are initialized
+        if(start !is null)
+            os_mem_unmap(start, chunkSize);
     }
 }
+
+
 
 /*
  * Information and book keeping about the allocations used by the GC
  */
-private struct AllocSystem
+struct AllocSystem
 {
     static
     {
@@ -89,17 +93,40 @@ private struct AllocSystem
         ///Mutexes used to
         auto smutex = shared(AlignedSpinLock)(SpinLock.Contention.brief);
         auto hmutex = shared(AlignedSpinLock)(SpinLock.Contention.brief);
+
+        void initialize()
+        {
+             //is this enough?
+            //should system memory actually grow?
+            AllocSystem.systemMemory = MemoryChunk(10 * PAGE_SIZE);
+            AllocSystem.heapMemory = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
+            AllocSystem.heapMemory.__ctor(2 * PAGE_SIZE); //is this enough to start?
+            AllocSystem.currentChunk = AllocSystem.heapMemory;
+        }
+
+        void finalize()
+        {
+
+            while(heapMemory !is null)
+            {
+                os_mem_unmap(heapMemory.start, heapMemory.chunkSize);
+                heapMemory = heapMemory.nextChunk;
+            }
+
+            destroy(systemMemory);
+
+            debug
+            {
+                import core.stdc.stdio;
+                printf("There were %d mem_maps and %d mem_unmaps\n",
+                        mem_maps, mem_unmaps);
+
+                printf("Heap use at exit: %d\n\n", mem_mappedSize-mem_unmappedSize);
+            }
+        }
     }
 
-    static this()
-    {
 
-    }
-
-    static ~this()
-    {
-        
-    }
 
 }
 

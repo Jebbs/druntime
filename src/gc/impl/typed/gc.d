@@ -13,7 +13,8 @@ import core.thread;
 
 import gc.config;
 import gc.gcinterface;
-import os = gc.os; //os_mem_map, os_mem_unmap
+import gc.impl.typed.systemalloc;
+import gc.impl.typed.bucketavl;
 
 import rt.util.container.array;
 
@@ -44,37 +45,6 @@ extern (C)
     void onOutOfMemoryErrorNoGC() @nogc nothrow;
 }
 
-
-
-uint mem_maps, mem_unmaps;
-
-uint mem_mappedSize, mem_unmappedSize;
-
-
-void* os_mem_map(size_t nbytes) nothrow
-{
-    debug
-    {
-        mem_maps++;
-        mem_mappedSize+= nbytes;
-    }
-
-    return os.os_mem_map(nbytes);
-}
-
-int os_mem_unmap(void* base, size_t nbytes) nothrow
-{
-    debug
-    {
-        mem_unmaps++;
-        mem_unmappedSize+=nbytes;
-    }
-    return os.os_mem_unmap(base, nbytes);
-}
-
-
-
-
 /**
  * The Typed GC organizes memory based on type.
  */
@@ -91,21 +61,7 @@ class TypedGC : GC
     *
     * Used to detect if a pointer is contained in the GC managed heap.
     */
-    void* heapBottom, heapTop;
-
-    ///The memory used by the system.
-    //initialized to 64kb/1Mb (256 pages) and assumed to not grow
-    MemoryChunk systemMemory;
-
-    /// The list of all memory chunks used by the heap.
-    MemoryChunk* heapMemory;
-    /// The chunk currently used to perform allocations.
-    MemoryChunk* currentChunk;
-
-    /// Mutexes used by the system and heap allocators respectively.
-    //Mutex smutex, hmutex;
-    auto smutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
-    auto hmutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
+    //void* heapBottom, heapTop;
 
 
     uint hashSize = 101;
@@ -305,8 +261,8 @@ class TypedGC : GC
     TypeBucket* findBucket(void* ptr) nothrow
     {
         //check if the pointer is in the boundaries of the heap memory
-        if(ptr < heapBottom || ptr >= heapTop)
-            return null;
+        //if(ptr < heapBottom || ptr >= heapTop)
+            //return null;
 
         SearchNode* current = root;
         while(current !is null)
@@ -360,6 +316,9 @@ class TypedGC : GC
         if (config.gc != "typed")
             return;
 
+        //initialize the internal allocation system
+        AllocSystem.initialize();
+
         auto p = cstdlib.malloc(__traits(classInstanceSize, TypedGC));
         if (!p)
             onOutOfMemoryErrorNoGC();
@@ -390,131 +349,20 @@ class TypedGC : GC
         destroy(instance);
         cstdlib.free(cast(void*) instance);
 
+
+        //finalize the internal allocation system
+        AllocSystem.finalize();
+
         debug
         {
             import core.stdc.stdio;
-            printf("There were %d mem_maps and %d mem_unmaps\n",
-                    mem_maps, mem_unmaps);
-
-            printf("Heap use at exit: %d\n\n", mem_mappedSize-mem_unmappedSize);
 
             printf("press enter to continue...\n");
             getchar();
         }
     }
 
-    /**
-     * MemoryChunk describes a chunk of memory obtained directly from the OS.
-     */
-    struct MemoryChunk
-    {
-        /// The start of the memory this chunk describes.
-        void* start;
-        /// The size of the MemoryChunk.
-        size_t chunkSize;
-        /// Where in the chunk to pop memory from when allocating.
-        void* offset;
-        /// A reference to the next chunk.
-        //(used to avoid an additional structure for making a linked list)
-        MemoryChunk* nextChunk;
 
-        /**
-         * MemoryChunk constructor.
-         *
-         * Initializes this chunk with new memory from the OS
-         */
-        this(size_t size) nothrow
-        {
-            chunkSize = size;
-            start = os_mem_map(chunkSize);
-            if (start is null)
-                onOutOfMemoryErrorNoGC;
-            offset = start;
-            nextChunk = null;
-        }
-        ~this()
-        {
-            os_mem_unmap(start, chunkSize);
-        }
-    }
-
-    /**
-     * System Alloc.
-     *
-     * This is used to allocate for internal structures. It is assumed to never fail
-     * for 2 reasons:
-     *  1. There is plenty of memory for the system to use internally. We should
-     *     always have enough.
-     *  2. The memory usage for a program should eventually hit a peak. Given enough
-     *     time, there will be plenty of storage space after a collection to not
-     *     warrant creating more internal objects.
-     *
-     * The System Alloc is designed to be thread safe.
-     */
-    void* salloc(size_t size) nothrow
-    {
-        smutex.lock();
-        scope (exit)
-            smutex.unlock();
-
-        void* oldOffset = systemMemory.offset;
-        systemMemory.offset += size;
-        debug
-        {
-            //shouldn't happen, but still check for it in debug during testing
-            if (systemMemory.offset > systemMemory.start + systemMemory.chunkSize)
-                onInvalidMemoryOperationError();
-        }
-
-        return oldOffset;
-    }
-
-    /**
-     * Heap Alloc.
-     *
-     * This is used to get GC managed memory for new buckets to use. This allocator
-     * is lazy in the sense that if it doesn't have enough room in one memory chunk
-     * to fulfill an allocation, it makes a new one.
-     *
-     * This can/should be optimized later to avoid fragmentation.
-     *
-     * This allocation could possibly fail, and will throw an OutOfMemoryError if it
-     * does.
-     */
-    void* halloc(size_t size) nothrow
-    {
-        hmutex.lock();
-        scope (exit)
-            hmutex.unlock();
-
-        //check size of allocation? Do something special if allocating a lot?
-        //(a big object, a big array, a large amount of memory is reserved?)
-
-        if (currentChunk.offset + size > currentChunk.start + currentChunk.chunkSize)
-        {
-            //or something generated by a growth algorithm?
-            size_t newChunkSize = 2 * PAGE_SIZE;
-            MemoryChunk* newChunk = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
-
-            //may throw out of memory error
-            newChunk.__ctor(newChunkSize);
-
-            currentChunk.nextChunk = newChunk;
-            currentChunk = newChunk;
-
-            //adjust the heap boundaries
-            if (currentChunk.start < heapBottom)
-                heapBottom = currentChunk.start;
-
-            if (heapTop < currentChunk.start + currentChunk.chunkSize)
-                heapTop = currentChunk.start + currentChunk.chunkSize;
-
-        }
-
-        void* oldOffset = currentChunk.offset;
-        currentChunk.offset += size;
-        return oldOffset;
-    }
 
     /**
      * Constructor for the Typed GC.
@@ -523,15 +371,8 @@ class TypedGC : GC
     {
         import core.stdc.string: memset;
 
-        //is this enough?
-        //should system memory actually grow?
-        systemMemory = MemoryChunk(10 * PAGE_SIZE);
-        heapMemory = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
-        heapMemory.__ctor(2 * PAGE_SIZE); //is this enough to start?
-        currentChunk = heapMemory;
-
-        heapBottom = currentChunk.start;
-        heapTop = currentChunk.start + currentChunk.chunkSize;
+        //heapBottom = currentChunk.start;
+        //heapTop = currentChunk.start + currentChunk.chunkSize;
 
         TypeBucket._gc = this;
         TypeManager._gc = this;
@@ -557,12 +398,6 @@ class TypedGC : GC
     ~this()
     {
         finalizeBuckets(root);
-
-        while(heapMemory !is null)
-        {
-            os_mem_unmap(heapMemory.start, heapMemory.chunkSize);
-            heapMemory = heapMemory.nextChunk;
-        }
 
 
         //calculate how much memory for hash
@@ -1426,16 +1261,16 @@ class TypedGC : GC
         void createNewBucket(ref TypeNode* node) nothrow
         {
             //create TypeNode
-            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
             //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
             newSearchNode.left = null;
             newSearchNode.right = null;
 
             //create TypeBucket
-            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+            auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
             //initialize the bucket
             *(newBucket) = TypeBucket(objectSize,ObjectsPerBucket, pointerMap);
@@ -1465,16 +1300,16 @@ class TypedGC : GC
         void CreateNewArrayBucket(ref TypeNode* node, size_t size) nothrow
         {
             //create TypeNode
-            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
             //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
             newSearchNode.left = null;
             newSearchNode.right = null;
 
             //create TypeBucket
-            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+            auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
             //calulate the full size of the array. This adds length to the array
             //to make it appendable
@@ -1579,16 +1414,16 @@ class TypedGC : GC
         void createNewBucket(ref TypeNode* node, size_t size, uint bits) nothrow
         {
             //create TypeNode
-            node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+            node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
             //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
             newSearchNode.left = null;
             newSearchNode.right = null;
 
             //create TypeBucket
-            auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+            auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
             //if(bits & BlkAttr.APPENDABLE)
 
@@ -1666,8 +1501,8 @@ class TypedGC : GC
             this.pointerMapSize = pointerMapSize;
 
 
-            memory = _gc.halloc(numberOfObjects*objectSize);
-            attributes = cast(ubyte*)_gc.salloc(ubyte.sizeof * numberOfObjects);
+            memory = halloc(numberOfObjects*objectSize);
+            attributes = cast(ubyte*)salloc(ubyte.sizeof * numberOfObjects);
         }
 
         /**
