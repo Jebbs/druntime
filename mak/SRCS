@@ -301,6 +301,7 @@ SRCS=\
 	src\gc\impl\proto\gc.d \
 	src\gc\impl\typed\gc.d \
 	src\gc\impl\typed\systemalloc.d \
+	src\gc\impl\typed\bucketavl.d \
 	src\gc\impl\typed\typebucket.d \
 	src\gc\impl\typed\typemanager.d \
 	\

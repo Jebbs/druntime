@@ -34,7 +34,7 @@ extern (C)
 struct TypeBucket
 {
     /// The number of objects held by the bucket
-private:
+package:
     void* memory; //a pointer to the memory used by this bucket to hold the objects
     size_t objectSize; //size of each object
     size_t pointerMap; //the bitmap describing what words are pointers

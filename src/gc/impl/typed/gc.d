@@ -45,6 +45,7 @@ extern (C)
 }
 
 
+
 uint mem_maps, mem_unmaps;
 
 uint mem_mappedSize, mem_unmappedSize;
@@ -162,6 +163,9 @@ class TypedGC : GC
     /// This is the root node in a binary tree
     SearchNode* root;
 
+    //set the ranges of the heap
+    void* memoryBottom = cast(void*)size_t.max, memoryTop = cast(void*)0;
+
     ///insert a SearchNode into the binary tree
     void searchNodeInsert(SearchNode* node) nothrow
     {
@@ -172,6 +176,15 @@ class TypedGC : GC
         }
 
         searchNodeInsertHelper(root, node);
+
+        if(node.bucket.memory < memoryBottom)
+            memoryBottom = node.bucket.memory;
+
+        if(node.bucket.memory > memoryTop) //buckets don't overlap, so this is fine
+            memoryTop = node.bucket.memory + node.bucket.objectSize * node.bucket.numberOfObjects;
+
+
+
         return;
     }
 
@@ -298,6 +311,12 @@ class TypedGC : GC
         SearchNode* current = root;
         while(current !is null)
         {
+            debug
+            {
+                auto currentBot = current.bucket.memory;
+                auto currentTop = current.bucket.memory + current.bucket.objectSize * current.bucket.numberOfObjects;
+            }
+
             if(current.bucket.containsObject(ptr))
                 return current.bucket;
 
@@ -530,6 +549,9 @@ class TypedGC : GC
         //pretend the memory is actually an array
         hashArray = (cast(TypeManager*)memory)[0 .. hashSize];
         memset(memory, 0, hashSize*TypeManager.sizeof);
+
+        //start the stack with tons of memory so it doesn't overflow
+        scanStack = ScanStack(3*PAGE_SIZE);
     }
 
     ~this()
@@ -1073,9 +1095,192 @@ class TypedGC : GC
         return false;
     }
 
+    /**
+     * ScanRange describes a range of memory that is going to get scanned.
+     *
+     * It holds a pointer bitmap for the type that spans the range, and will be
+     * scanned precisely if possible.
+     */
+    struct ScanRange
+    {
+        void* pbot, ptop; //the asterisk is left associative, these are both pointers
+        size_t pointerMap;
+
+        //this allows the ScanRange to be used in a foreach loop
+        //the compiler will lower everything efficiently
+        int opApply(int delegate(void*) nothrow dg ) nothrow
+        {
+            debug import core.stdc.stdio;
+            int result = 0;
+
+            void** memBot = cast(void**)pbot;
+            void** memTop = cast(void**)ptop;
+
+            if(pointerMap == size_t.max) //scan conservatively
+            {
+                for(; memBot < memTop; memBot++)
+                {
+                    //debug printf("scanning conservatively: %X -> %X\n", memBot, *memBot);
+
+                    result = dg(*memBot);
+
+                    if(result)
+                        break;
+                }
+            }
+            else //scan precisely with bsf
+            {
+                for(auto pos = bsf(pointerMap); pointerMap != 0; pointerMap &= ~(1 << pos))
+                {
+
+                    auto offset = pos*size_t.sizeof;
+
+                    //debug printf("scanning precisely: %X -> %X\n",
+                    //memBot+offset, *(memBot+offset));
+
+                    result = dg(*(memBot+(pos*size_t.sizeof)));
+
+                    if(result)
+                        break;
+                }
+            }
+
+            return result;
+        }
+    }
+
+    /**
+     * ScanStack describes a stack of ScanRange objects.
+     *
+     * The memory the stack uses is allocated upfront and assumed to be adequate.
+     */
+    struct ScanStack
+    {
+        void* memory;
+        size_t count = 0;
+        ScanRange[] array;
+        size_t memSize;
+
+        this(size_t size)
+        {
+            //allocate size amount of memory and set up array
+
+            assert(size%ScanRange.sizeof == 0);//should always be wholly divisible
+
+            memory = os_mem_map(size);
+            memSize = size;
+
+            //pretend this is an array of ScanRanges
+            array = (cast(ScanRange*)memory)[0 .. (size/ScanRange.sizeof)];
+
+        }
+        ~this()
+        {
+            //free memory used by array
+            os_mem_unmap(memory, memSize);
+        }
+
+        bool empty() nothrow
+        {
+            return count == 0;
+        }
+
+        //assume check for empty was done before this was called
+        ScanRange pop() nothrow
+        {
+            return array[count--];
+        }
+
+        void push(ScanRange range) nothrow
+        {
+            array[++count] = range;
+        }
+    }
+
+    //Start the stack at some large size
+    //so that we hopefully never run into an overflow
+    ScanStack scanStack;// = ScanStack(3*PAGE_SIZE);
+
+    //copied from lifetime.d (more or less)
+    void* getArrayStart(BlkInfo info) nothrow
+    {
+        enum : size_t
+        {
+            PAGESIZE = 4096,
+            BIGLENGTHMASK = ~(PAGESIZE - 1),
+            SMALLPAD = 1,
+            MEDPAD = ushort.sizeof,
+            LARGEPREFIX = 16, // 16 bytes padding at the front of the array
+            LARGEPAD = LARGEPREFIX + 1,
+            MAXSMALLSIZE = 256-SMALLPAD,
+            MAXMEDSIZE = (PAGESIZE / 2) - MEDPAD
+        }
+
+
+        return info.base + ((info.size & BIGLENGTHMASK) ? LARGEPREFIX : 0);
+    }
+
+
     void mark(void* pbot, void* ptop) scope nothrow
     {
         import core.stdc.stdio;
+
+
+        //push the current range onto the stack to start the algorithm
+        scanStack.push(ScanRange(pbot, ptop, size_t.max));
+
+        while(!scanStack.empty())
+        {
+            ScanRange range = scanStack.pop();
+
+            //printf("Scanning from %X to %X\n", range.pbot, range.ptop);
+
+            foreach(void* ptr; range)
+            {
+                if( ptr >= memoryBottom && ptr < memoryTop)
+                {
+                    auto bucket = findBucket(ptr);
+
+                    if(bucket is null)
+                    {
+                        continue;
+                    }
+
+                    if(!bucket.testMarkAndSet(ptr))
+                    {
+                        printf("Found %X\n", ptr);
+
+                        if(bucket.getAttr(ptr) & BlkAttr.NO_SCAN)
+                            continue;
+
+                        //put in special scan here for array
+                        //if we're scanning an array
+                        if(bucket.arrayType)
+                        {
+                            BlkInfo arrInfo = bucket.query(ptr);
+                            auto arrayPos = getArrayStart(arrInfo);
+                            auto arrayEnd = arrayPos+bucket.objectSize;
+
+
+                            ubyte pointerMapSize = bucket.pointerMapSize;
+
+                            for(;arrayPos < arrayEnd; arrayPos+= pointerMapSize)//each object in the array
+                            {
+                                //push that object into the scan stack
+                                scanStack.push(ScanRange(arrayPos, arrayPos + pointerMapSize, bucket.pointerMap));
+                            }
+                        }
+                        else
+                        {
+
+                            scanStack.push(ScanRange(ptr, ptr + bucket.objectSize, bucket.pointerMap));
+                        }
+                    }
+                }
+
+            }
+        }
+
 
     }
 
@@ -1103,6 +1308,7 @@ class TypedGC : GC
         size_t objectSize;
         ubyte ObjectsPerBucket;
         bool isArrayType;
+        ubyte pointerMapSize;//used for array scanning
 
         //Mutex mutex;
         auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
@@ -1138,12 +1344,16 @@ class TypedGC : GC
                     //if the type is a pointer or reference type, we will always
                     //have one indirection to the actual object
                     pointerMap = 1;
+                    pointerMapSize = size_t.sizeof;
                 }
                 else
                 {
                     auto rtInfo = cast(const(size_t)*) tinext.rtInfo();
                     if (rtInfo !is null)
                     {
+                        pointerMapSize = cast(ubyte)(rtInfo[0]);
+
+                        int breaker = 0;
                         //copy the pointer bitmap embedded in the run time info
                         pointerMap = rtInfo[1];
                     }
@@ -1269,11 +1479,17 @@ class TypedGC : GC
             //calulate the full size of the array. This adds length to the array
             //to make it appendable
 
-            //array size = requested size + (approximate length * 0.3)
-            size_t arraySize = cast(size_t)(size + objectSize* cast(size_t)((size/objectSize) * 0.3f));
+            //array size = requested size + (approximate length * 0.25 * object size)
+
+            size_t padding = ((size/objectSize) >> 2) * objectSize;
+
+            size_t arraySize = size + padding;
 
             //initialize the bucket
-            *(newBucket) = TypeBucket(arraySize,ObjectsPerBucket, pointerMap);
+            *(newBucket) = TypeBucket(arraySize,ObjectsPerBucket, pointerMap, pointerMapSize);
+
+            //let the bucket know it is an array
+            newBucket.arrayType = true;
 
 
             node.bucket = newBucket;
@@ -1432,12 +1648,13 @@ class TypedGC : GC
         uint markMap; //the bitmap of all object that have been found during a collection
         ubyte numberOfObjects;
         bool arrayType;
-        //space for two more bytes for this allignment
+        ubyte pointerMapSize;//used for array scanning
+        //space for one more byte for this allignment
 
     public:
 
         /// TypeBucket Constructor
-        this(size_t size, ubyte numberOfObjects, size_t pointerMap) nothrow
+        this(size_t size, ubyte numberOfObjects, size_t pointerMap, ubyte pointerMapSize = 0) nothrow
         {
             objectSize = size;
             this.numberOfObjects = numberOfObjects;
@@ -1446,6 +1663,7 @@ class TypedGC : GC
             markMap = 0;
 
             this.pointerMap = pointerMap;
+            this.pointerMapSize = pointerMapSize;
 
 
             memory = _gc.halloc(numberOfObjects*objectSize);

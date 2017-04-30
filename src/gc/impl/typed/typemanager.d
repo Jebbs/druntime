@@ -9,6 +9,21 @@ import gc.impl.typed.typebucket;
 
 
 
+//this is here temprorarily to get things to compile
+
+//it will be removed when the AVL struct is set up
+struct SearchNode
+    {
+        TypeBucket* bucket;
+        SearchNode* left;
+        SearchNode* right;
+
+        int height;
+    }
+
+
+
+
 /**
  *  TypeManager manages the allocations for a specific type.
  */
@@ -133,16 +148,16 @@ struct TypeManager
     void createNewBucket(ref TypeNode* node) nothrow
     {
         //create TypeNode
-        node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+        node = cast(TypeNode*)salloc(TypeNode.sizeof);
         node.next = null;
 
         //Create SearchNode
-        auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+        auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
         newSearchNode.left = null;
         newSearchNode.right = null;
 
         //create TypeBucket
-        auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+        auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
         //initialize the bucket
         *(newBucket) = TypeBucket(objectSize,ObjectsPerBucket, pointerMap);
@@ -152,7 +167,7 @@ struct TypeManager
         newSearchNode.bucket = newBucket;
 
         allocateNode = node;
-        _gc.searchNodeInsert(newSearchNode);
+        //searchNodeInsert(newSearchNode);
     }
 
 
@@ -172,16 +187,16 @@ struct TypeManager
     void CreateNewArrayBucket(ref TypeNode* node, size_t size) nothrow
     {
         //create TypeNode
-        node = cast(TypeNode*)_gc.salloc(TypeNode.sizeof);
+        node = cast(TypeNode*)salloc(TypeNode.sizeof);
         node.next = null;
 
         //Create SearchNode
-        auto newSearchNode = cast(SearchNode*)_gc.salloc(SearchNode.sizeof);
+        auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
         newSearchNode.left = null;
         newSearchNode.right = null;
 
         //create TypeBucket
-        auto newBucket = cast(TypeBucket*)_gc.salloc(TypeBucket.sizeof);
+        auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
         //calulate the full size of the array. This adds length to the array
         //to make it appendable
@@ -197,7 +212,7 @@ struct TypeManager
         newSearchNode.bucket = newBucket;
 
         allocateNode = node;
-        _gc.searchNodeInsert(newSearchNode);
+        //searchNodeInsert(newSearchNode);
     }
 
 
@@ -230,7 +245,7 @@ struct TypeManager
     {
         BlkInfo ret;
         ret.base = alloc(bits);
-        ret.size = allocateNode.bucket.objectSize;
+        //ret.size = allocateNode.bucket.objectSize;
         ret.attr = bits;
 
         return ret;
