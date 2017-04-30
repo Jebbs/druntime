@@ -5,64 +5,111 @@
  module gc.impl.typed.bucketavl;
 
  import gc.impl.typed.systemalloc;
- import gc.impl.typed.typesystem;
+ import gc.impl.typed.typebucket;
 
+/**
+ * Node describes a node in an AVL binary tree.
+ *
+ */
+struct Node
+{
+    TypeBucket* bucket;
+    Node* left;
+    Node* right;
 
-     /**
-     * SearchNode describes a node in a binary tree.
-     *
-     * This node is used when searching for a bucket by pointer.
-     */
-    struct SearchNode
+    int height;
+}
+
+/**
+ * The BucketAVL is an AVL Tree implementation intended for TypeBuckets.
+ *
+ */
+struct BucketAVL
+{
+    ///helper function to get the max
+    int max(int a, int b) nothrow
     {
-        TypeBucket* bucket;
-        SearchNode* left;
-        SearchNode* right;
-
-        int height;
+        return (a>b)?a:b;
     }
 
-    /// This is the root node in a binary tree
-    SearchNode* root;
+    ///helper function to get the height of a node (because null)
+    int getHeight(Node* node) nothrow
+    {
+        if(node is null)
+            return 0;
 
-    ///insert a SearchNode into the binary tree
-    void searchNodeInsert(SearchNode* node) nothrow
+        return node.height;
+    }
+
+    /// the root node
+    Node* root;
+
+    NodeStack stack;
+
+    /// the boundaries of the heap managed by the buckets
+    void* bottomBoundary, topBoundary;
+
+    void insert(TypeBucket* bucket) nothrow
     {
         if(root is null)
         {
+            Node* node = cast(Node*)salloc(Node.sizeof);
+
+            node.left = null;
+            node.right = null;
+            node.bucket = bucket;
+
             root = node;
             return;
         }
 
-        searchNodeInsertHelper(root, node);
-        return;
+        insertHelper(root, bucket);
+
+        if(bucket.memory < bottomBoundary)
+            bottomBoundary = bucket.memory;
+
+        if(bucket.memory > topBoundary) //buckets don't overlap, so this is fine
+            topBoundary = bucket.memory + bucket.objectSize * bucket.numberOfObjects;
+
     }
 
-
-    void searchNodeInsertHelper(ref SearchNode* current, SearchNode* node) nothrow
+    void insertHelper(ref Node* current, TypeBucket* bucket) nothrow
     {
-        if( node.bucket.memory < current.bucket.memory)
+        if( bucket.memory < current.bucket.memory)
         {
             if(current.left is null)
             {
+
+                Node* node = cast(Node*)salloc(Node.sizeof);
+
+                node.left = null;
+                node.right = null;
+                node.bucket = bucket;
+
                 current.left = node;
                 current.left.height = 1;
             }
             else
             {
-                searchNodeInsertHelper(current.left, node);
+                insertHelper(current.left, bucket);
             }
         }
         else //we will never have duplicates
         {
             if(current.right is null)
             {
+                Node* node = cast(Node*)salloc(Node.sizeof);
+
+                node.left = null;
+                node.right = null;
+                node.bucket = bucket;
+
                 current.right = node;
                 current.right.height = 1;
             }
             else
             {
-                searchNodeInsertHelper(current.right, node);
+                insertHelper(current.right, bucket);
             }
         }
 
@@ -76,7 +123,7 @@
 
         if(balance > 1)
         {
-            if(node.bucket.memory < current.left.bucket.memory)
+            if(bucket.memory < current.left.bucket.memory)
             {
                 //left left rotation
                 current = LLRot(current);
@@ -89,7 +136,7 @@
         }
         else if(balance < -1)
         {
-            if(node.bucket.memory < current.right.bucket.memory)
+            if(bucket.memory < current.right.bucket.memory)
             {
                 //right left rotation
                 current.right = LLRot(current.left);
@@ -98,67 +145,18 @@
             }
             //right right rotation
             current = RRRot(current);
-            int breaker = 0;
         }
 
-    }
-
-    SearchNode* LLRot(SearchNode* k2) nothrow
-    {
-        SearchNode* k1 = k2.left;
-        SearchNode* y = k1.right;
-
-        k2.left = y;
-        k1.right = k2;
-
-        //height updates
-        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
-        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
-
-        int breaker = 0;
-
-        return k1;
-    }
-
-    SearchNode* RRRot(SearchNode* k2) nothrow
-    {
-        SearchNode* k1 = k2.right;
-        SearchNode* y = k1.left;
-
-        k2.right = y;
-        k1.left = k2;
-
-
-        //height updates
-        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
-        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
-
-        int breaker = 0;
-
-        return k1;
-    }
-
-    int max(int a, int b) nothrow
-    {
-        return (a>b)?a:b;
-    }
-
-    int getHeight(SearchNode* node) nothrow
-    {
-        if(node is null)
-            return 0;
-
-        return node.height;
     }
 
     ///Search the Binary tree for the bucket containing ptr
     TypeBucket* findBucket(void* ptr) nothrow
     {
         //check if the pointer is in the boundaries of the heap memory
-        if(ptr < heapBottom || ptr >= heapTop)
+        if(ptr < bottomBoundary || ptr >= topBoundary)
             return null;
 
-        SearchNode* current = root;
+        Node* current = root;
         while(current !is null)
         {
             if(current.bucket.containsObject(ptr))
@@ -169,3 +167,101 @@
 
         return null;
     }
+
+    int opApply(int delegate(TypeBucket*) nothrow dg) nothrow
+    {
+        int result = 0;
+        Node* current = root;
+
+        while(true)
+        {
+            while(current != null)
+            {
+                stack.push(current);
+                current = current.left;
+            }
+
+            if(!stack.empty())
+            {
+                current = stack.pop();
+
+                result = dg(current.bucket);
+
+                if(result)
+                    break;
+
+                current = current.right;
+            }
+            else
+                break;
+        }
+
+
+
+        return result;
+    }
+
+    Node* LLRot(Node* k2) nothrow
+    {
+        Node* k1 = k2.left;
+        Node* y = k1.right;
+
+        k2.left = y;
+        k1.right = k2;
+
+        //height updates
+        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
+        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
+
+        return k1;
+    }
+
+    Node* RRRot(Node* k2) nothrow
+    {
+        Node* k1 = k2.right;
+        Node* y = k1.left;
+
+        k2.right = y;
+        k1.left = k2;
+
+
+        //height updates
+        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
+        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
+
+        return k1;
+    }
+
+}
+
+/**
+ * NodeStack is a stack of binary tree nodes.
+ *
+ * This stack is used by the BucketAVL structure to implement some functions
+ * iteratively.
+ */
+struct NodeStack
+{
+    ///The array used to implement the stack
+    ///20 nodes should be plenty, even for a huge tree (log2 of 100000 is 16.6)
+    private Node*[20] array;
+    private ubyte count = 0;
+
+    bool empty() nothrow
+    {
+        return count == 0;
+    }
+
+    void push(Node* node) nothrow
+    {
+        array[++count] = node;
+    }
+
+    Node* pop() nothrow
+    {
+        return  array[count--];
+    }
+}
+
+
+

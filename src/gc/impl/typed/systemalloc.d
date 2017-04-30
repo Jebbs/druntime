@@ -91,6 +91,16 @@ private struct AllocSystem
         auto hmutex = shared(AlignedSpinLock)(SpinLock.Contention.brief);
     }
 
+    static this()
+    {
+
+    }
+
+    static ~this()
+    {
+        
+    }
+
 }
 
 void* os_mem_map(size_t nbytes) nothrow
