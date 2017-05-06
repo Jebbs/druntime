@@ -47,7 +47,7 @@ struct BucketAVL
     NodeStack stack;
 
     /// the boundaries of the heap managed by the buckets
-    void* bottomBoundary, topBoundary;
+    void* bottomBoundary = cast(void*)size_t.max, topBoundary = cast(void*)0;
 
     void insert(TypeBucket* bucket) nothrow
     {
@@ -73,7 +73,7 @@ struct BucketAVL
 
     }
 
-    void insertHelper(ref Node* current, TypeBucket* bucket) nothrow
+    private void insertHelper(ref Node* current, TypeBucket* bucket) nothrow
     {
         if( bucket.memory < current.bucket.memory)
         {
@@ -191,6 +191,7 @@ struct BucketAVL
                     break;
 
                 current = current.right;
+                int breaker = 0;
             }
             else
                 break;

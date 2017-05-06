@@ -48,8 +48,10 @@ void main()
     duration = MonoTime.currTime - start;
     printf("The collection took: %d nanoseconds\n", duration.total!("nsecs"));
 
+    test = new int();
 
-
+    string testString = "what";
+    testString = testString~"?!";
 }
 
 

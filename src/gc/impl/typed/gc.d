@@ -15,6 +15,7 @@ import gc.config;
 import gc.gcinterface;
 import gc.impl.typed.systemalloc;
 import gc.impl.typed.bucketavl;
+import gc.impl.typed.typebucket;
 
 import rt.util.container.array;
 
@@ -68,6 +69,19 @@ class TypedGC : GC
     TypeManager[] hashArray;
     UntypedManager untypedManager;
 
+    struct ListNode(T)
+    {
+        T object;
+        ListNode!(T)* next;
+    }
+
+    alias ManagerNode = ListNode!(TypeManager*);
+
+    ManagerNode* managers;
+    ManagerNode* lastManager;
+
+
+
     //perform a simple double hash. Should be enough, but can be optimized later
     size_t hashFunc(size_t hash, uint i) nothrow
     {
@@ -91,6 +105,21 @@ class TypedGC : GC
             {
                 hashArray[pos].__ctor(size, ti);
 
+                if(managers is null)
+                {
+                    managers = cast(ManagerNode*)salloc(ManagerNode.sizeof);
+                    managers.object = &hashArray[pos];
+                    managers.next = null;
+                    lastManager = managers;
+                }
+                else
+                {
+                    lastManager.next = cast(ManagerNode*)salloc(ManagerNode.sizeof);
+                    lastManager = lastManager.next;
+                    lastManager.object = &hashArray[pos];
+                    lastManager.next = null;
+                }
+
                 return &(hashArray[pos]);
             }
             else if(hashArray[pos].info is ti)
@@ -102,203 +131,16 @@ class TypedGC : GC
         }
     }
 
-    /**
-     * SearchNode describes a node in a binary tree.
-     *
-     * This node is used when searching for a bucket by pointer.
-     */
-    struct SearchNode
-    {
-        TypeBucket* bucket;
-        SearchNode* left;
-        SearchNode* right;
-
-        int height;
-    }
-
-    /// This is the root node in a binary tree
-    SearchNode* root;
-
-    //set the ranges of the heap
-    void* memoryBottom = cast(void*)size_t.max, memoryTop = cast(void*)0;
-
-    ///insert a SearchNode into the binary tree
-    void searchNodeInsert(SearchNode* node) nothrow
-    {
-        if(root is null)
-        {
-            root = node;
-            return;
-        }
-
-        searchNodeInsertHelper(root, node);
-
-        if(node.bucket.memory < memoryBottom)
-            memoryBottom = node.bucket.memory;
-
-        if(node.bucket.memory > memoryTop) //buckets don't overlap, so this is fine
-            memoryTop = node.bucket.memory + node.bucket.objectSize * node.bucket.numberOfObjects;
-
-
-
-        return;
-    }
-
-
-    void searchNodeInsertHelper(ref SearchNode* current, SearchNode* node) nothrow
-    {
-        if( node.bucket.memory < current.bucket.memory)
-        {
-            if(current.left is null)
-            {
-                current.left = node;
-                current.left.height = 1;
-            }
-            else
-            {
-                searchNodeInsertHelper(current.left, node);
-            }
-        }
-        else //we will never have duplicates
-        {
-            if(current.right is null)
-            {
-                current.right = node;
-                current.right.height = 1;
-            }
-            else
-            {
-                searchNodeInsertHelper(current.right, node);
-            }
-        }
-
-
-        int leftHeight = getHeight(current.left);
-        int rightHeight = getHeight(current.right);
-
-        current.height = ((leftHeight>rightHeight)?leftHeight:rightHeight) + 1;
-
-        int balance = leftHeight - rightHeight;
-
-        if(balance > 1)
-        {
-            if(node.bucket.memory < current.left.bucket.memory)
-            {
-                //left left rotation
-                current = LLRot(current);
-                return;
-            }
-
-            //left right rotation
-            current.left  = RRRot(current.left);
-            current = LLRot(current);
-        }
-        else if(balance < -1)
-        {
-            if(node.bucket.memory < current.right.bucket.memory)
-            {
-                //right left rotation
-                current.right = LLRot(current.left);
-                current = RRRot(current);
-                return;
-            }
-            //right right rotation
-            current = RRRot(current);
-            int breaker = 0;
-        }
-
-    }
-
-    SearchNode* LLRot(SearchNode* k2) nothrow
-    {
-        SearchNode* k1 = k2.left;
-        SearchNode* y = k1.right;
-
-        k2.left = y;
-        k1.right = k2;
-
-        //height updates
-        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
-        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
-
-        int breaker = 0;
-
-        return k1;
-    }
-
-    SearchNode* RRRot(SearchNode* k2) nothrow
-    {
-        SearchNode* k1 = k2.right;
-        SearchNode* y = k1.left;
-
-        k2.right = y;
-        k1.left = k2;
-
-
-        //height updates
-        k2.height = max(getHeight(k2.left), getHeight(k2.left)) + 1;
-        k1.height = max(getHeight(k1.left), getHeight(k1.left)) + 1;
-
-        int breaker = 0;
-
-        return k1;
-    }
-
-    int max(int a, int b) nothrow
-    {
-        return (a>b)?a:b;
-    }
-
-    int getHeight(SearchNode* node) nothrow
-    {
-        if(node is null)
-            return 0;
-
-        return node.height;
-    }
-
-    ///Search the Binary tree for the bucket containing ptr
-    TypeBucket* findBucket(void* ptr) nothrow
-    {
-        //check if the pointer is in the boundaries of the heap memory
-        //if(ptr < heapBottom || ptr >= heapTop)
-            //return null;
-
-        SearchNode* current = root;
-        while(current !is null)
-        {
-            debug
-            {
-                auto currentBot = current.bucket.memory;
-                auto currentTop = current.bucket.memory + current.bucket.objectSize * current.bucket.numberOfObjects;
-            }
-
-            if(current.bucket.containsObject(ptr))
-                return current.bucket;
-
-            current = (ptr < current.bucket.memory)? current.left:current.right;
-        }
-
-        return null;
-    }
-
-
+    BucketAVL buckets;
 
     //recursive function for finalizing all buckets in the binary tree
-    void finalizeBuckets(SearchNode* node)
+    void finalizeBuckets() nothrow
     {
-        if(node is null)
-            return;
-
-        if(node.left !is null)
-            finalizeBuckets(node.left);
-        if(node.right !is null)
-            finalizeBuckets(node.right);
-
-        node.bucket.dtor();
+        foreach(bucket; buckets)
+        {
+            bucket.dtor();
+        }
     }
-
-
 
     /**
      * Initialize the GC based on command line configuration.
@@ -374,7 +216,6 @@ class TypedGC : GC
         //heapBottom = currentChunk.start;
         //heapTop = currentChunk.start + currentChunk.chunkSize;
 
-        TypeBucket._gc = this;
         TypeManager._gc = this;
         UntypedManager._gc = this;
 
@@ -397,8 +238,7 @@ class TypedGC : GC
 
     ~this()
     {
-        finalizeBuckets(root);
-
+        finalizeBuckets();
 
         //calculate how much memory for hash
         uint numberOfPages = 1;
@@ -452,7 +292,13 @@ class TypedGC : GC
         thread_suspendAll();
 
         //prepare for scanning
-        //prepare();
+
+        prepare();
+
+        foreach(bucket; buckets)
+        {
+            //bucket.prepare();
+        }
 
         //scan and mark
         thread_scanAll(&mark);
@@ -783,7 +629,7 @@ class TypedGC : GC
      */
     BlkInfo query(void* p) nothrow
     {
-        auto bucket = findBucket(p);
+        auto bucket = buckets.findBucket(p);
 
         if(bucket is null)
             return BlkInfo.init;
@@ -930,6 +776,22 @@ class TypedGC : GC
         return false;
     }
 
+
+    /**
+     * Prepare the GC for the marking process.
+     *
+     * This function will go through and informs all TypeManagers that they need
+     * to sweep next time they allocate.
+     */
+    void prepare() nothrow
+    {
+        for(auto cur = managers; cur !is null; cur = cur.next)
+        {
+            cur.object.prepare();
+        }
+    }
+
+
     /**
      * ScanRange describes a range of memory that is going to get scanned.
      *
@@ -965,7 +827,7 @@ class TypedGC : GC
             }
             else //scan precisely with bsf
             {
-                for(auto pos = bsf(pointerMap); pointerMap != 0; pointerMap &= ~(1 << pos))
+                for(auto pos = bsf(pointerMap); pointerMap != 0; pointerMap &= ~(1 << pos), pos = bsf(pointerMap))
                 {
 
                     auto offset = pos*size_t.sizeof;
@@ -991,6 +853,8 @@ class TypedGC : GC
      */
     struct ScanStack
     {
+        import core.stdc.stdio;
+
         void* memory;
         size_t count = 0;
         ScanRange[] array;
@@ -1007,7 +871,6 @@ class TypedGC : GC
 
             //pretend this is an array of ScanRanges
             array = (cast(ScanRange*)memory)[0 .. (size/ScanRange.sizeof)];
-
         }
         ~this()
         {
@@ -1023,11 +886,19 @@ class TypedGC : GC
         //assume check for empty was done before this was called
         ScanRange pop() nothrow
         {
+            debug
+            {
+                //printf("Stack popped: %d elements\n", count-1);
+            }
             return array[count--];
         }
 
         void push(ScanRange range) nothrow
         {
+            debug
+            {
+                //printf("Stack pusheded: %d elements\n", count+1);
+            }
             array[++count] = range;
         }
     }
@@ -1060,7 +931,6 @@ class TypedGC : GC
     {
         import core.stdc.stdio;
 
-
         //push the current range onto the stack to start the algorithm
         scanStack.push(ScanRange(pbot, ptop, size_t.max));
 
@@ -1072,44 +942,36 @@ class TypedGC : GC
 
             foreach(void* ptr; range)
             {
-                if( ptr >= memoryBottom && ptr < memoryTop)
+                auto bucket = buckets.findBucket(ptr);
+
+                if(bucket is null)
                 {
-                    auto bucket = findBucket(ptr);
+                    continue;
+                }
 
-                    if(bucket is null)
-                    {
+                if(!bucket.testMarkAndSet(ptr))
+                {
+                    //printf("Found %X\n", ptr);
+                    if(bucket.getAttr(ptr) & BlkAttr.NO_SCAN)
                         continue;
-                    }
 
-                    if(!bucket.testMarkAndSet(ptr))
+                    //put in special scan here for array
+                    //if we're scanning an array
+                    if(bucket.arrayType)
                     {
-                        printf("Found %X\n", ptr);
-
-                        if(bucket.getAttr(ptr) & BlkAttr.NO_SCAN)
-                            continue;
-
-                        //put in special scan here for array
-                        //if we're scanning an array
-                        if(bucket.arrayType)
+                        BlkInfo arrInfo = bucket.query(ptr);
+                        auto arrayPos = getArrayStart(arrInfo);
+                        auto arrayEnd = arrayPos+bucket.objectSize;
+                        ubyte pointerMapSize = bucket.pointerMapSize;
+                        for(;arrayPos < arrayEnd; arrayPos+= pointerMapSize)//each object in the array
                         {
-                            BlkInfo arrInfo = bucket.query(ptr);
-                            auto arrayPos = getArrayStart(arrInfo);
-                            auto arrayEnd = arrayPos+bucket.objectSize;
-
-
-                            ubyte pointerMapSize = bucket.pointerMapSize;
-
-                            for(;arrayPos < arrayEnd; arrayPos+= pointerMapSize)//each object in the array
-                            {
-                                //push that object into the scan stack
-                                scanStack.push(ScanRange(arrayPos, arrayPos + pointerMapSize, bucket.pointerMap));
-                            }
+                            //push that object into the scan stack
+                            scanStack.push(ScanRange(arrayPos, arrayPos + pointerMapSize, bucket.pointerMap));
                         }
-                        else
-                        {
-
-                            scanStack.push(ScanRange(ptr, ptr + bucket.objectSize, bucket.pointerMap));
-                        }
+                    }
+                    else
+                    {
+                        scanStack.push(ScanRange(ptr, ptr + bucket.objectSize, bucket.pointerMap));
                     }
                 }
 
@@ -1144,6 +1006,7 @@ class TypedGC : GC
         ubyte ObjectsPerBucket;
         bool isArrayType;
         ubyte pointerMapSize;//used for array scanning
+        bool needsSweeping;
 
         //Mutex mutex;
         auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
@@ -1152,6 +1015,8 @@ class TypedGC : GC
         TypeNode* buckets;
         /// Bucket to be used when performing allocations (to avoid searching)
         TypeNode* allocateNode;
+        //a freelist to be used for array types
+        TypeNode* freeList;
 
         /**
          * Construct a new TypeManager.
@@ -1264,10 +1129,6 @@ class TypedGC : GC
             node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
-            //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
-            newSearchNode.left = null;
-            newSearchNode.right = null;
 
             //create TypeBucket
             auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
@@ -1277,13 +1138,10 @@ class TypedGC : GC
 
 
             node.bucket = newBucket;
-            newSearchNode.bucket = newBucket;
 
             allocateNode = node;
-            _gc.searchNodeInsert(newSearchNode);
+            _gc.buckets.insert(newBucket);
         }
-
-
 
         /**
          * Creates a new TypeBucket for an array and initializes it.
@@ -1303,10 +1161,6 @@ class TypedGC : GC
             node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
-            //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
-            newSearchNode.left = null;
-            newSearchNode.right = null;
 
             //create TypeBucket
             auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
@@ -1328,12 +1182,10 @@ class TypedGC : GC
 
 
             node.bucket = newBucket;
-            newSearchNode.bucket = newBucket;
 
             allocateNode = node;
-            _gc.searchNodeInsert(newSearchNode);
+            _gc.buckets.insert(newBucket);
         }
-
 
         //finds a bucket and grabs memory from it
         void* alloc(uint bits) nothrow
@@ -1342,6 +1194,9 @@ class TypedGC : GC
             //will call mutex.unlock() at the end of the scope
             scope (exit)
                 mutex.unlock();
+
+            if(needsSweeping)
+                sweep();
 
             //make sure we have a bucket that can store new objects
             while (allocateNode.bucket.isFull())
@@ -1359,7 +1214,6 @@ class TypedGC : GC
             return allocateNode.bucket.alloc(bits);
         }
 
-
         BlkInfo qalloc(uint bits) nothrow
         {
             BlkInfo ret;
@@ -1368,6 +1222,49 @@ class TypedGC : GC
             ret.attr = bits;
 
             return ret;
+        }
+
+        void prepare() nothrow
+        {
+            needsSweeping = true;
+        }
+
+        void sweep() nothrow
+        {
+            TypeNode start;
+            start.next = buckets;
+            for(auto cur = &start; cur.next !is null;)
+            {
+                //sweep the buckets
+                cur.next.bucket.sweep();
+                if(isArrayType && cur.next.bucket.empty())
+                {
+
+                    // push into a free list if empty
+                    TypeNode* temp = cur.next;
+                    cur.next = cur.next.next;
+
+                    if(freeList is null)
+                        temp.next = null;
+                    else
+                        temp.next = freeList;
+
+                    freeList = temp;
+                    
+                }
+                else
+                {
+                    cur = cur.next;
+                }
+            }
+
+            if(!isArrayType)
+            {
+                //set the allocation bucket to the bucket in the list
+                allocateNode = buckets;
+            }
+
+            needsSweeping = false;
         }
 
     }
@@ -1417,11 +1314,6 @@ class TypedGC : GC
             node = cast(TypeNode*)salloc(TypeNode.sizeof);
             node.next = null;
 
-            //Create SearchNode
-            auto newSearchNode = cast(SearchNode*)salloc(SearchNode.sizeof);
-            newSearchNode.left = null;
-            newSearchNode.right = null;
-
             //create TypeBucket
             auto newBucket = cast(TypeBucket*)salloc(TypeBucket.sizeof);
 
@@ -1432,10 +1324,9 @@ class TypedGC : GC
 
 
             node.bucket = newBucket;
-            newSearchNode.bucket = newBucket;
 
             allocateNode = node;
-            _gc.searchNodeInsert(newSearchNode);
+            _gc.buckets.insert(newBucket);
         }
 
         //finds a bucket and grabs memory from it
@@ -1462,231 +1353,6 @@ class TypedGC : GC
 
     }
 
-
-    /**
-     * TypeBucket is a structure that defines a bucket holding a single type.
-     *
-     * This structure uses information about the type in order to perform some cool
-     * things.
-     */
-    struct TypeBucket
-    {
-        static TypedGC _gc;
-
-        /// The number of objects held by the bucket
-    private:
-        void* memory; //a pointer to the memory used by this bucket to hold the objects
-        size_t objectSize; //size of each object
-        size_t pointerMap; //the bitmap describing what words are pointers
-        ubyte* attributes; //the attributes per object
-        uint freeMap; //the bitmap of all free objects in this bucket
-        uint markMap; //the bitmap of all object that have been found during a collection
-        ubyte numberOfObjects;
-        bool arrayType;
-        ubyte pointerMapSize;//used for array scanning
-        //space for one more byte for this allignment
-
-    public:
-
-        /// TypeBucket Constructor
-        this(size_t size, ubyte numberOfObjects, size_t pointerMap, ubyte pointerMapSize = 0) nothrow
-        {
-            objectSize = size;
-            this.numberOfObjects = numberOfObjects;
-
-            freeMap = 0;
-            markMap = 0;
-
-            this.pointerMap = pointerMap;
-            this.pointerMapSize = pointerMapSize;
-
-
-            memory = halloc(numberOfObjects*objectSize);
-            attributes = cast(ubyte*)salloc(ubyte.sizeof * numberOfObjects);
-        }
-
-        /**
-         * Cleans up the object held by the bucket.
-         *
-         * Since the memory the bucket uses is allocated elsewhere, it does not free
-         * it.
-         */
-        void dtor()
-        {
-            uint numObjs = numberOfObjects;
-
-            while (freeMap != 0)
-            {
-                auto pos = bsf(freeMap);
-
-
-                uint attr = attributes[pos];
-
-
-                if (attributes[pos] & BlkAttr.FINALIZE || attributes[pos] & BlkAttr.STRUCTFINAL)
-                {
-                    rt_finalizeFromGC(memory + pos * objectSize, objectSize, attributes[pos]);
-                }
-
-                freeMap &= ~(1 << pos);
-            }
-        }
-
-        /**
-         * Checks the freemap to see if this bucket is full.
-         */
-        bool isFull() nothrow
-        {
-            final switch(numberOfObjects)
-            {
-                case 32:
-                    return freeMap == uint.max;
-                case 16:
-                    return freeMap == cast(uint)ushort.max;
-                case 8:
-                    return freeMap == cast(uint)ubyte.max;
-                case 4:
-                    return freeMap == cast(uint)0b1111;
-                case 1:
-                    return freeMap == cast(uint)1;
-            }
-        }
-
-        /**
-         * Provide some memory for the GC to create a new object.
-         */
-        void* alloc(uint bits) nothrow
-        {
-            //assume we're in a correct state to allocate
-
-            auto pos = bsf(cast(size_t)~freeMap);
-
-            //Current attributes use at most 6 bits, so we can use a smaller
-            //type internally
-            attributes[pos] = cast(ubyte) bits;
-            freeMap |= (1 << pos);
-
-            void* actualLocation = memory + pos * objectSize;
-
-            return actualLocation;
-        }
-
-        /**
-         * Run the finalizer on the object stored at p, and then sets it as free in
-         * the freeMap.
-         *
-         * This function assumes that the pointer is within this bucket.
-         */
-        void free(void* p) nothrow
-        {
-
-            //find the position, run finalizer, clear bits
-
-            auto pos = (p - memory) / objectSize;
-
-            //check if needs finalization
-            if (attributes[pos] & BlkAttr.FINALIZE || attributes[pos] & BlkAttr.STRUCTFINAL)
-            {
-                rt_finalizeFromGC(memory + pos * objectSize, objectSize, attributes[pos]);
-            }
-
-            freeMap &= ~(1 << pos);
-        }
-
-        void* addrOf(void* p) nothrow
-        {
-            //assume that p is one of these objects
-            return memory + ((p - memory) / objectSize) * objectSize;
-        }
-
-        BlkInfo query(void* p) nothrow
-        {
-            BlkInfo ret;
-
-            auto pos = (p - memory) / objectSize;
-
-            ret.base = memory + pos * objectSize;
-            ret.size = objectSize;
-            ret.attr = attributes[pos];
-
-            return ret;
-        }
-
-        void sweep() nothrow
-        {
-            uint markBit = 1;
-
-            //run finalizers for all non-marked objects (if they need it)
-
-            //mark those objects as freed
-        }
-
-        /**
-         * Checks if a pointer lies within a chunk of memory that has been marked
-         * during a GC collection.
-         *
-         * This function assumes that the pointer is within this bucket.
-         *
-         * Returns:
-         *  True if p is marked, otherwise returns false.
-         */
-        bool isMarked(void* p) nothrow
-        {
-            uint markBit = 1 << (p - memory) / objectSize;
-
-            return (markMap & markBit) ? true : false;
-        }
-
-        /**
-         * Check if the mark bit is set for this pointer, and sets it if not set.
-         *
-         * This function assumes that the pointer is within this bucket.
-         *
-         * Returns:
-         *  True if the pointer was already marked, false if it wasn't.
-         */
-        bool testMarkAndSet(void* p) nothrow
-        {
-            uint markBit = 1 << (p - memory) / objectSize;
-
-            if (markMap & markBit)
-                return true;
-
-            markMap |= markBit;
-            return false;
-        }
-
-        /**
-         * Checks to see if a pointer to something points to an object in this
-         * bucket.
-         */
-        bool containsObject(void* p) nothrow
-        {
-            if (p >= memory && p < memory + objectSize * numberOfObjects)
-                return true;
-
-            return false;
-        }
-
-        uint getAttr(void* p) nothrow
-        {
-            return attributes[(p - memory) / objectSize];
-        }
-
-        uint setAttr(void* p, uint mask) nothrow
-        {
-            attributes[(p - memory) / objectSize] |= mask;
-
-            return attributes[(memory - p) / objectSize];
-        }
-
-        uint clrAttr(void* p, uint mask) nothrow
-        {
-            attributes[(p - memory) / objectSize] &= ~mask;
-
-            return attributes[(memory - p) / objectSize];
-        }
-    }
 }
 
 
