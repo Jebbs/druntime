@@ -275,8 +275,7 @@ enum BucketInfo: ubyte
 {
     NORMAL_TYPE = 0b0000,
     RAW_MEMORY  = 0b0001,
-    ARRAY_TYPE  = 0b0010,
-    FINALIZE    = 0b0100
+    ARRAY_TYPE  = 0b0010
 }
 
 //class to get me thinking about design of different kinds of Buckets
@@ -302,11 +301,6 @@ class Bucket
     abstract bool isFull() nothrow;
 
 
-    bool empty() nothrow
-    {
-        return freeMap == 0;
-    }
-
     /**
      * Provide some memory for the GC to create a new object.
      */
@@ -320,16 +314,36 @@ class Bucket
      */
     abstract void free(void* p) nothrow;
 
+    /**
+     * Get information about the block of memory containing p.
+     */
+    abstract BlkInfo query(void* p) nothrow;
+
+    /**
+     * Perform a sweep of the bucket, freeing any unreachable objects.
+     *
+     * After this function is called, the markMap will be reset and the freeMap
+     * will be updated.
+     */
+    abstract void sweep() nothrow;
+
+    /**
+     * Check if this bucket is empty.
+     */
+    bool empty() nothrow
+    {
+        return freeMap == 0;
+    }
+
+    /**
+     * Get the base address of the block containing p.
+     */
     void* addrOf(void* p) nothrow
     {
         //assume that p is one of these objects
         return memory + ((p - memory) / objectSize) * objectSize;
     }
 
-    abstract BlkInfo query(void* p) nothrow;
-
-
-    abstract void sweep() nothrow;
 
     /**
      * Checks if a pointer lies within a chunk of memory that has been marked
@@ -357,6 +371,9 @@ class Bucket
      */
     bool testMarkAndSet(void* p) nothrow
     {
+
+        //this should test the attributes to make sure we are ok with interior pointers
+
         uint markBit = 1 << (p - memory) / objectSize;
 
         if (markMap & markBit)
@@ -405,21 +422,45 @@ class Bucket
 
 }
 
-
+///Bucket used in conjunction with raw memory allocations.
 class RawBucket: Bucket
 {
 
-    this(size_t size) nothrow
+    static RawBucket newBucket(size_t size, void* memory) nothrow
+    {
+        import core.stdc.string : memcpy;
+
+
+        //allocate memory for the bucket
+        auto ptr = salloc(__traits(classInstanceSize, RawBucket));
+
+        //get the initializer
+        auto init = typeid(RawBucket).initializer();
+
+        //create the instance
+        auto bucket = cast(RawBucket)memcpy(ptr, init.ptr, init.length);
+
+        bucket.__ctor(size, memory);
+
+        return bucket;
+    }
+
+
+    this(size_t size, void* memory) nothrow
     {
         objectSize = size;
         attributes = cast(ubyte*)salloc(ubyte.sizeof);
+        pointerMap = size_t.max;
+        numberOfObjects = 1;
+
+        this.memory = memory;
     }
     /**
      * Checks the freemap to see if this bucket is full.
      */
     override bool isFull() nothrow
     {
-        return (freeMap !=0);
+        return (freeMap == 1);
     }
 
     /**
@@ -457,25 +498,42 @@ class RawBucket: Bucket
 
     override void sweep() nothrow
     {
+        if(markMap)
+            return;
+
         if(markMap == 0)
             freeMap = 0;
     }
 }
 
+///Bucket used in conjumction with array allocations.
 class ArrayBucket: Bucket
 {
-
-    this(size_t size) nothrow
+    //If the object this array contains is a pointer type or not.
+    bool isObjectPointerType;
+    ///the size of individual objects in the array
+    ubyte arrayObjectSize;
+    this(size_t size, bool pointerType, size_t pointerMap,
+         ubyte arrayObjectSize, void* memory) nothrow
     {
         objectSize = size;
         attributes = cast(ubyte*)salloc(ubyte.sizeof);
+
+        isObjectPointerType = pointerType;
+
+        this.pointerMap = pointerMap;
+        this.arrayObjectSize= arrayObjectSize;
+
+        numberOfObjects = 1;
+
+        this.memory = memory;
     }
     /**
      * Checks the freemap to see if this bucket is full.
      */
     override bool isFull() nothrow
     {
-        return (freeMap !=0);
+        return (freeMap == 1);
     }
 
     /**
@@ -496,7 +554,158 @@ class ArrayBucket: Bucket
      */
     override void free(void* p) nothrow
     {
+        markMap = 0;
+        sweep();
+    }
+
+    override BlkInfo query(void* p) nothrow
+    {
+        BlkInfo ret;
+
+        ret.base = memory;
+        ret.size = objectSize;
+        ret.attr = *attributes;
+
+        return ret;
+    }
+
+
+    override void sweep() nothrow
+    {
+        if(markMap)
+            return;
+
+        //check if pointer type or type doesn't need finalizer
+        if(isObjectPointerType || ~(*attributes) & BlkAttr.FINALIZE ||
+                ~(*attributes) & BlkAttr.STRUCTFINAL)
+        {
+            //don't worry about freeing individual objects
+
+            freeMap = 0;
+            markMap = 0;
+            return;
+        }
+
+
+        auto arrayPos = getArrayStart();
+        auto arrayEnd = arrayPos + getArrayLength()*arrayObjectSize;
+        for (; arrayPos < arrayEnd; arrayPos += arrayObjectSize) //each object in the array
+        {
+            rt_finalizeFromGC(arrayPos + arrayObjectSize, objectSize, *attributes);
+        }
+
         freeMap = 0;
+        markMap = 0;
+    }
+
+    /**
+     * Find the start of our array, depending on the size.
+     *
+     * This is more or less copied from lifetime.d
+     */
+    void* getArrayStart() nothrow
+    {
+        enum : size_t
+        {
+            PAGESIZE = 4096,
+            BIGLENGTHMASK = ~(PAGESIZE - 1),
+            LARGEPREFIX = 16, // 16 bytes padding at the front of the array
+        }
+
+        return memory + ((objectSize & BIGLENGTHMASK) ? LARGEPREFIX : 0);
+    }
+
+    /**
+     * Get the number of objects contained in this array.
+     *
+     * Because this is being called from the GC, we should be able to ignore the
+     * possibility of a TypeInfo instance being embedded in the array (see
+     * structTypeInfoSize on line 215 in runtime.d).
+     *
+     * This function was more or less copied from __arrayAllocLength in
+     * lifetime.d.
+     */
+    size_t getArrayLength() pure nothrow
+    {
+        enum: size_t
+        {
+            PAGESIZE = 4096,
+            SMALLPAD = ubyte.sizeof,
+            MEDPAD = ushort.sizeof,
+        }
+
+        if(objectSize <= 256)
+            return *cast(ubyte *)(memory + objectSize - SMALLPAD);
+
+        if(objectSize < PAGESIZE)
+            return *cast(ushort *)(memory + objectSize - MEDPAD);
+
+        return *cast(size_t *)(memory);
+    }
+
+}
+
+///Bucket used in conjumction with array allocations.
+class ObjectsBucket: Bucket
+{
+    uint fullsize;
+    this(ubyte numberOfObjects,uint fullsize, size_t objectSize, size_t pointerMap, void* memory) nothrow
+    {
+        //how many objects a small bucket will hold
+        this.numberOfObjects = numberOfObjects;
+
+        this.objectSize = objectSize;
+        attributes = cast(ubyte*)salloc(ubyte.sizeof * numberOfObjects);
+        this.pointerMap = pointerMap;
+
+        this.fullsize = fullsize;
+
+        this.memory = memory;
+    }
+    /**
+     * Checks the freemap to see if this bucket is full.
+     */
+    override bool isFull() nothrow
+    {
+        return (freeMap  == fullsize);
+    }
+
+    /**
+     * Provide some memory for the GC to create a new object.
+     */
+    override void* alloc(uint bits) nothrow
+    {
+        auto pos = bsf(cast(size_t)~freeMap);
+
+        //Current attributes use at most 6 bits, so we can use a smaller
+        //type internally
+        attributes[pos] = cast(ubyte) bits;
+        freeMap |= (1 << pos);
+
+        void* actualLocation = memory + pos * objectSize;
+
+        return actualLocation;
+    }
+
+    /**
+     * Run the finalizer on the object stored at p, and then sets it as free in
+     * the freeMap.
+     *
+     * This function assumes that the pointer is within this bucket.
+     */
+    override void free(void* p) nothrow
+    {
+        //find the position, run finalizer, clear bits
+
+        auto pos = (p - memory) / objectSize;
+
+        //check if needs finalization
+        if (attributes[pos] & BlkAttr.FINALIZE || attributes[pos] & BlkAttr.STRUCTFINAL)
+        {
+            rt_finalizeFromGC(memory + pos * objectSize, objectSize, attributes[pos]);
+        }
+
+        freeMap &= ~(1 << pos);
     }
 
     override BlkInfo query(void* p) nothrow

@@ -8,10 +8,6 @@ import gc.impl.typed.systemalloc;
 import gc.impl.typed.typebucket;
 import gc.impl.typed.bucketavl;
 
-
-
-
-
 //The base class for type managers
 class TypeManager
 {
@@ -19,13 +15,10 @@ class TypeManager
 
     struct TypeNode
     {
-        TypeBucket* bucket;
+        Bucket bucket;
         TypeNode* next;
     }
 
-    const TypeInfo info; //type info reference for hash comparison
-    size_t pointerMap;
-    size_t objectSize;
     bool needsSweeping;
 
     auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
@@ -33,17 +26,146 @@ class TypeManager
     /// Linked list of all buckets managed for this type
     TypeNode* buckets;
 
-    //finds a bucket and grabs memory from it
-    abstract void* alloc(uint bits) nothrow;
-    
-    abstract BlkInfo qalloc(uint bits) nothrow;
+    /// Perform a thread safe allocation.
+    abstract void* alloc(size_t size, uint bits) nothrow;
+
+    abstract BlkInfo qalloc(size_t size, uint bits) nothrow;
+
+    abstract void sweep() nothrow;
 
     void prepare() nothrow
     {
         needsSweeping = true;
     }
+}
 
-    abstract void sweep() nothrow;
+const TypeInfo info; //type info reference for hash comparison
+size_t pointerMap;
+size_t objectSize;
+
+class RawManager: TypeManager
+{
+
+    TypeNode* freeList;
+
+    override void* alloc(size_t size, uint bits) nothrow
+    {
+        mutex.lock();
+        //will call mutex.unlock() at the end of the scope
+        scope (exit) mutex.unlock();
+
+        size_t allocSize = size;
+
+        if(bits & BlkAttr.APPENDABLE)
+            allocSize+= size >> 2;
+
+
+        if(buckets is null)
+        {
+            return allocImpl(allocSize, bits);
+        }
+        else
+        {
+            if(freeList is null)
+                return allocImpl(allocSize, bits);
+
+
+            TypeNode* last;
+            TypeNode* current = freeList;
+
+
+            for(;current != null; last = current, current = current.next)
+            {
+                //search through freelist to get a bucket large enough
+                if(current.bucket.objectSize >= allocSize)
+                {
+                    TypeNode* temp = current.next;
+
+                    current.next = buckets;
+
+                    buckets = current;
+
+                    if(last is null)
+                        freeList = temp;
+                    else
+                        last.next = temp;
+
+                    return buckets.bucket.alloc(bits);
+                }
+            }
+
+            //otherwise allocate new bucket
+            return allocImpl(allocSize, bits);
+        }
+
+    }
+
+    void* allocImpl(size_t size, uint bits) nothrow
+    {
+        //create TypeNode
+        auto node = cast(TypeNode*)salloc(TypeNode.sizeof);
+        node.next = buckets; //we're going to put this bucket in the front
+
+        void* memory = halloc(size);
+
+        //create TypeBucket
+        auto newBucket = RawBucket.newBucket(size, memory);
+        node.bucket = newBucket;
+
+        //the new bucket is at the front
+        buckets = node;
+
+        //gcBuckets.insert(newBucket); //needs to be updated for buckets
+
+        return newBucket.alloc(bits);
+    }
+
+    override BlkInfo qalloc(size_t size, uint bits) nothrow
+    {
+        BlkInfo ret;
+
+        ret.base = alloc(size, bits);
+        ret.size = buckets.bucket.objectSize;
+        ret.attr = bits;
+
+        return ret;
+    }
+
+    override void sweep() nothrow
+    {
+        TypeNode* last;
+        TypeNode* current = buckets;
+
+        while(current != null)
+        {
+            current.bucket.sweep();
+
+            //put empty bucket into a freelist
+            if(current.bucket.empty())
+            {
+                TypeNode* temp = current;
+                current = current.next;
+
+                //make sure thebucket list is correct
+                if(last !is null)
+                    buckets = current;
+                else
+                    last.next = current;
+
+                if(freeList is null)
+                    temp.next = null;
+                else
+                    temp.next = freeList;
+
+                    freeList = temp;
+            }
+            else
+            {
+                last = current;
+                current = current.next;
+            }
+        }
+    }
 }
 
 
