@@ -221,3 +221,32 @@ void* halloc(size_t size) nothrow
     AllocSystem.currentChunk.offset += size;
     return oldOffset;
 }
+
+
+//This function allocates a class using salloc
+//it assumes that the constructor handles all initialization
+//so that it can avoid copying the initializer
+T New(T, Args...)(auto ref Args args) nothrow
+if(is(T == class))
+{
+    auto ptr = salloc(__traits(classInstanceSize, T));
+
+    //this can be added back if initialization becomes a problem
+    //auto init = typeid(T).initializer();
+    //memcpy(ptr, init.ptr, init.length);
+
+    (cast(T)ptr).__ctor(args);
+    return cast(T)ptr;
+}
+
+//This function allocates a pointer to a struct using salloc
+
+T* New(T, Args...)(auto ref Args args) nothrow
+if(is(T == struct))
+{
+    auto ptr = salloc(T.sizeof);
+    static if(Args.length >0)
+        (cast(T*)ptr).__ctor(args);
+
+    return cast(T*)ptr;
+}
