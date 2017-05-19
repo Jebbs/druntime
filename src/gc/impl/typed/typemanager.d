@@ -39,20 +39,23 @@ class TypeManager
     }
 }
 
-const TypeInfo info; //type info reference for hash comparison
-size_t pointerMap;
-size_t objectSize;
-
 class RawManager: TypeManager
 {
-
     TypeNode* freeList;
+
+    this()
+    {
+        freeList = null;
+    }
 
     override void* alloc(size_t size, uint bits) nothrow
     {
         mutex.lock();
         //will call mutex.unlock() at the end of the scope
         scope (exit) mutex.unlock();
+
+        if(needsSweeping)
+            sweep();
 
         size_t allocSize = size;
 
@@ -103,13 +106,13 @@ class RawManager: TypeManager
     void* allocImpl(size_t size, uint bits) nothrow
     {
         //create TypeNode
-        auto node = cast(TypeNode*)salloc(TypeNode.sizeof);
+        auto node = New!TypeNode();
         node.next = buckets; //we're going to put this bucket in the front
 
         void* memory = halloc(size);
 
         //create TypeBucket
-        auto newBucket = RawBucket.newBucket(size, memory);
+        auto newBucket = New!RawBucket(size, memory);
         node.bucket = newBucket;
 
         //the new bucket is at the front
@@ -169,7 +172,304 @@ class RawManager: TypeManager
 }
 
 
+class TypedManager: TypeManager
+{
 
+    this(const TypeInfo ti)
+    {
+        info = ti;
+    }
+
+    const TypeInfo info; //type info reference for hash comparison
+    size_t pointerMap; //a bitmap representing the layout of pointers
+    size_t objectSize; //the size of individual objects
+}
+
+
+class ArrayManager: TypedManager
+{
+
+    TypeNode* freeList;
+    bool pointerType;
+
+    this(const TypeInfo ti)
+    {
+        //need this in order to correctly initialize the type info
+        super(ti);
+
+        pointerType = ((cast(const TypeInfo_Pointer) ti.next !is null) ||
+                   (cast(const TypeInfo_Class) ti.next !is null));
+
+        if(pointerType)
+        {
+            //if the type is a pointer or reference type, we will always
+            //have one indirection to the actual object, which is stored in its
+            //own bucket
+            objectSize = size_t.sizeof;
+            pointerMap = 1;
+        }
+        else
+        {
+            auto rtInfo = cast(const(size_t)*) ti.next.rtInfo();
+            if (rtInfo !is null)
+            {
+                objectSize = cast(ubyte)(rtInfo[0]);
+                int breaker = 0;
+                //copy the pointer bitmap embedded in the run time info
+                pointerMap = rtInfo[1];
+            }
+        }
+    }
+
+    override void* alloc(size_t size, uint bits) nothrow
+    {
+        mutex.lock();
+        //will call mutex.unlock() at the end of the scope
+        scope (exit) mutex.unlock();
+
+        if(needsSweeping)
+            sweep();
+
+        //get some padding for the array
+        size_t padding = ((size/objectSize) >> 2) * objectSize;
+        size+=padding;
+
+        if(buckets is null)
+        {
+            return allocImpl(size, bits);
+        }
+        else
+        {
+            if(freeList is null)
+                return allocImpl(size, bits);
+
+
+            TypeNode* last;
+            TypeNode* current = freeList;
+
+
+            for(;current != null; last = current, current = current.next)
+            {
+                //search through freelist to get a bucket large enough
+                if(current.bucket.objectSize >= size)
+                {
+                    TypeNode* temp = current.next;
+
+                    current.next = buckets;
+
+                    buckets = current;
+
+                    if(last is null)
+                        freeList = temp;
+                    else
+                        last.next = temp;
+
+                    return buckets.bucket.alloc(bits);
+                }
+            }
+
+            //otherwise allocate new bucket
+            return allocImpl(size, bits);
+        }
+
+    }
+
+    void* allocImpl(size_t size, uint bits) nothrow
+    {
+        //create TypeNode
+        auto node = New!TypeNode();
+        node.next = buckets; //we're going to put this bucket in the front
+
+        void* memory = halloc(size);
+
+        //create TypeBucket
+        auto newBucket = New!ArrayBucket(size, pointerType, pointerMap,
+            objectSize, memory);
+        node.bucket = newBucket;
+
+        //the new bucket is at the front
+        buckets = node;
+
+        //gcBuckets.insert(newBucket); //needs to be updated for buckets
+
+        return newBucket.alloc(bits);
+    }
+
+    override BlkInfo qalloc(size_t size, uint bits) nothrow
+    {
+        BlkInfo ret;
+
+        ret.base = alloc(size, bits);
+        ret.size = buckets.bucket.objectSize;
+        ret.attr = bits;
+
+        return ret;
+    }
+
+    override void sweep() nothrow
+    {
+        TypeNode* last;
+        TypeNode* current = buckets;
+
+        while(current != null)
+        {
+            current.bucket.sweep();
+
+            //put empty bucket into a freelist
+            if(current.bucket.empty())
+            {
+                TypeNode* temp = current;
+                current = current.next;
+
+                //make sure thebucket list is correct
+                if(last !is null)
+                    buckets = current;
+                else
+                    last.next = current;
+
+                if(freeList is null)
+                    temp.next = null;
+                else
+                    temp.next = freeList;
+
+                    freeList = temp;
+            }
+            else
+            {
+                last = current;
+                current = current.next;
+            }
+        }
+    }
+}
+
+class ObjectsManager: TypedManager
+{
+    ubyte objectsPerBucket;
+    uint fullMap; //a bitmap showing what the freeMap will look like when full
+    TypeNode* allocateNode;
+    this(const TypeInfo ti, size_t objectSize)
+    {
+        //need this in order to correctly initialize the type info
+        super(ti);
+
+        this.objectSize = objectSize;
+        objectsPerBucket = getObjectsPerBucket(objectSize);
+        fullMap = getFullMap();
+        auto rtInfo = cast(const(size_t)*) ti.rtInfo();
+        pointerMap = rtInfo[1];
+    }
+
+    override void* alloc(size_t size, uint bits) nothrow
+    {
+        mutex.lock();
+        //will call mutex.unlock() at the end of the scope
+        scope (exit) mutex.unlock();
+
+        if(needsSweeping)
+            sweep();
+
+        return allocImpl(bits);
+    }
+
+    void* allocImpl(uint bits) nothrow
+    {
+        //make sure we have a bucket that can store new objects
+        for(;allocateNode.bucket.isFull(); allocateNode = allocateNode.next)
+        {
+            if (allocateNode.next is null)
+            {
+                //creates a new TypeNode and will assign it to allocateNode
+                createNewBucket(allocateNode.next);
+                break;
+            }
+        }
+
+        return allocateNode.bucket.alloc(bits);
+    }
+
+    override BlkInfo qalloc(size_t size, uint bits) nothrow
+    {
+        BlkInfo ret;
+
+        ret.base = alloc(size, bits);
+        ret.size = buckets.bucket.objectSize;
+        ret.attr = bits;
+
+        return ret;
+    }
+
+    override void sweep() nothrow
+    {
+        for(auto cur = buckets; cur != null; cur = cur.next)
+        {
+            cur.bucket.sweep();
+        }
+    }
+
+    ubyte getObjectsPerBucket(size_t objectSize) nothrow
+    {
+        if(objectSize < 64)      //small
+        {
+            return 32;
+        }
+        else if(objectSize < 128)//medium
+        {
+            return 16;
+        }
+        else if(objectSize < 256)//large
+        {
+            return 8;
+        }
+        else                     //HUGE
+        {
+            return 1;
+        }
+    }
+
+    uint getFullMap()
+    {
+
+        final switch(objectsPerBucket)
+        {
+            case 32:
+                return uint.max;
+            case 16:
+                return ushort.max;
+            case 8:
+                return ubyte.max;
+            case 1:
+                return 1;
+        }
+    }
+
+    /**
+     * Creates a new TypeBucket for this type and initializes it.
+     *
+     * In addition to creating the bucket itself, it also
+     * inserts a new SearchNode into the search tree.
+     *
+     * Params:
+     *  node = A reference to the end of the linked list.
+     */
+    void createNewBucket(ref TypeNode* node) nothrow
+    {
+        //create TypeNode
+        node = New!TypeNode();
+        node.next = null;
+
+        void* memory = halloc(objectSize*objectsPerBucket);
+
+        //create TypeBucket
+        auto newBucket = New!ObjectsBucket(objectsPerBucket,fullMap,
+        objectSize, pointerMap, memory);
+
+        node.bucket = newBucket;
+
+        allocateNode = node;
+        //gcBuckets.insert(newBucket);
+    }
+}
 
 
 /**
@@ -429,7 +729,6 @@ struct TypeManagerProto
                     temp.next = freeList;
 
                 freeList = temp;
-                    
             }
             else
             {

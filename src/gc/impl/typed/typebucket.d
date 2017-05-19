@@ -512,9 +512,11 @@ class ArrayBucket: Bucket
     //If the object this array contains is a pointer type or not.
     bool isObjectPointerType;
     ///the size of individual objects in the array
-    ubyte arrayObjectSize;
+    size_t arrayObjectSize;
+    //create an alias so that the code looks more natural
+    alias arraySize = objectSize;
     this(size_t size, bool pointerType, size_t pointerMap,
-         ubyte arrayObjectSize, void* memory) nothrow
+         size_t arrayObjectSize, void* memory) nothrow
     {
         objectSize = size;
         attributes = cast(ubyte*)salloc(ubyte.sizeof);
@@ -528,6 +530,7 @@ class ArrayBucket: Bucket
 
         this.memory = memory;
     }
+
     /**
      * Checks the freemap to see if this bucket is full.
      */
@@ -645,11 +648,14 @@ class ArrayBucket: Bucket
 
 }
 
-///Bucket used in conjumction with array allocations.
+///Bucket used in conjumction with object allocations.
 class ObjectsBucket: Bucket
 {
-    uint fullsize;
-    this(ubyte numberOfObjects,uint fullsize, size_t objectSize, size_t pointerMap, void* memory) nothrow
+    ///what the freeMap looks like when it is full
+    uint fullMap;
+
+    this(ubyte numberOfObjects, uint fullMap, size_t objectSize,
+    size_t pointerMap, void* memory) nothrow
     {
         //how many objects a small bucket will hold
         this.numberOfObjects = numberOfObjects;
@@ -658,7 +664,7 @@ class ObjectsBucket: Bucket
         attributes = cast(ubyte*)salloc(ubyte.sizeof * numberOfObjects);
         this.pointerMap = pointerMap;
 
-        this.fullsize = fullsize;
+        this.fullMap = fullMap;
 
         this.memory = memory;
     }
@@ -667,7 +673,7 @@ class ObjectsBucket: Bucket
      */
     override bool isFull() nothrow
     {
-        return (freeMap  == fullsize);
+        return (freeMap  == fullMap);
     }
 
     /**
