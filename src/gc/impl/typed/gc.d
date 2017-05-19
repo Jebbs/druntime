@@ -1354,6 +1354,3 @@ class TypedGC : GC
     }
 
 }
-
-
-
