@@ -1250,7 +1250,6 @@ class TypedGC : GC
                         temp.next = freeList;
 
                     freeList = temp;
-                    
                 }
                 else
                 {

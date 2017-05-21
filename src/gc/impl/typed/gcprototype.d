@@ -116,7 +116,6 @@ class TypedGC : GC
      */
     void Dtor()//can I remove this?
     {
-        
     }
 
     /**
@@ -634,7 +633,6 @@ class TypedGC : GC
      */
     void runFinalizers(in void[] segment) nothrow
     {
-        
     }
 
     /**

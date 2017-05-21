@@ -56,7 +56,7 @@ void main()
     start = MonoTime.currTime;
     void* rawMemory = GC.malloc(200);//, GC.BlkAttr.APPENDABLE);
     duration = MonoTime.currTime - start;
-    printf("The allocation took: %d nanoseconds\n", duration.total!("nsecs")); 
+    printf("The allocation took: %d nanoseconds\n", duration.total!("nsecs"));
 
     start = MonoTime.currTime;
     GC.collect();
