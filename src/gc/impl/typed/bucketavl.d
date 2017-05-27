@@ -13,7 +13,7 @@
  */
 struct Node
 {
-    TypeBucket* bucket;
+    TypeBucket bucket;
     Node* left;
     Node* right;
 
@@ -49,7 +49,7 @@ struct BucketAVL
     /// the boundaries of the heap managed by the buckets
     void* bottomBoundary = cast(void*)size_t.max, topBoundary = cast(void*)0;
 
-    void insert(TypeBucket* bucket) nothrow
+    void insert(TypeBucket bucket) nothrow
     {
         if(root is null)
         {
@@ -73,7 +73,7 @@ struct BucketAVL
 
     }
 
-    private void insertHelper(ref Node* current, TypeBucket* bucket) nothrow
+    private void insertHelper(ref Node* current, TypeBucket bucket) nothrow
     {
         if( bucket.memory < current.bucket.memory)
         {
@@ -150,7 +150,7 @@ struct BucketAVL
     }
 
     ///Search the Binary tree for the bucket containing ptr
-    TypeBucket* findBucket(void* ptr) nothrow
+    TypeBucket findBucket(void* ptr) nothrow
     {
         //check if the pointer is in the boundaries of the heap memory
         if(ptr < bottomBoundary || ptr >= topBoundary)
@@ -168,7 +168,7 @@ struct BucketAVL
         return null;
     }
 
-    int opApply(int delegate(TypeBucket*) nothrow dg) nothrow
+    int opApply(int delegate(TypeBucket) nothrow dg) nothrow
     {
         int result = 0;
         Node* current = root;

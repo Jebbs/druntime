@@ -229,11 +229,12 @@ void* halloc(size_t size) nothrow
 T New(T, Args...)(auto ref Args args) nothrow
 if(is(T == class))
 {
+    import core.stdc.string: memcpy;
     auto ptr = salloc(__traits(classInstanceSize, T));
 
     //this can be added back if initialization becomes a problem
-    //auto init = typeid(T).initializer();
-    //memcpy(ptr, init.ptr, init.length);
+    auto init = typeid(T).initializer();
+    memcpy(ptr, init.ptr, init.length);
 
     (cast(T)ptr).__ctor(args);
     return cast(T)ptr;

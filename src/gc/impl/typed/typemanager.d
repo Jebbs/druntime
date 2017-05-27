@@ -15,13 +15,13 @@ class TypeManager
 
     struct TypeNode
     {
-        Bucket bucket;
+        TypeBucket bucket;
         TypeNode* next;
     }
 
     bool needsSweeping;
 
-    auto mutex = shared(AlignedSpinLock)(SpinLock.Contention.lengthy);
+    
 
     /// Linked list of all buckets managed for this type
     TypeNode* buckets;
@@ -43,16 +43,16 @@ class RawManager: TypeManager
 {
     TypeNode* freeList;
 
-    this()
+    this() nothrow
     {
         freeList = null;
     }
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        mutex.lock();
+        //mutex.lock();
         //will call mutex.unlock() at the end of the scope
-        scope (exit) mutex.unlock();
+        //scope (exit) mutex.unlock();
 
         if(needsSweeping)
             sweep();
@@ -118,7 +118,7 @@ class RawManager: TypeManager
         //the new bucket is at the front
         buckets = node;
 
-        //gcBuckets.insert(newBucket); //needs to be updated for buckets
+        gcBuckets.insert(newBucket);
 
         return newBucket.alloc(bits);
     }
@@ -175,7 +175,7 @@ class RawManager: TypeManager
 class TypedManager: TypeManager
 {
 
-    this(const TypeInfo ti)
+    this(const TypeInfo ti) nothrow
     {
         info = ti;
     }
@@ -192,7 +192,7 @@ class ArrayManager: TypedManager
     TypeNode* freeList;
     bool pointerType;
 
-    this(const TypeInfo ti)
+    this(const TypeInfo ti) nothrow
     {
         //need this in order to correctly initialize the type info
         super(ti);
@@ -200,6 +200,7 @@ class ArrayManager: TypedManager
         pointerType = ((cast(const TypeInfo_Pointer) ti.next !is null) ||
                    (cast(const TypeInfo_Class) ti.next !is null));
 
+        int breaker1 = 0;
         if(pointerType)
         {
             //if the type is a pointer or reference type, we will always
@@ -210,6 +211,7 @@ class ArrayManager: TypedManager
         }
         else
         {
+            auto tinext = ti.next;
             auto rtInfo = cast(const(size_t)*) ti.next.rtInfo();
             if (rtInfo !is null)
             {
@@ -218,19 +220,30 @@ class ArrayManager: TypedManager
                 //copy the pointer bitmap embedded in the run time info
                 pointerMap = rtInfo[1];
             }
+            else
+            {
+                //otherwise we have something that doesn't need to be scanned
+                //(it contains no pointers)
+                pointerMap = 0;
+                objectSize = tinext.tsize;
+                int breaker = 0;
+            }
         }
     }
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        mutex.lock();
+        //mutex.lock();
         //will call mutex.unlock() at the end of the scope
-        scope (exit) mutex.unlock();
+        //scope (exit) mutex.unlock();
 
         if(needsSweeping)
             sweep();
 
         //get some padding for the array
+
+        size_t sz = objectSize;
+
         size_t padding = ((size/objectSize) >> 2) * objectSize;
         size+=padding;
 
@@ -290,7 +303,7 @@ class ArrayManager: TypedManager
         //the new bucket is at the front
         buckets = node;
 
-        //gcBuckets.insert(newBucket); //needs to be updated for buckets
+        gcBuckets.insert(newBucket);
 
         return newBucket.alloc(bits);
     }
@@ -321,8 +334,8 @@ class ArrayManager: TypedManager
                 TypeNode* temp = current;
                 current = current.next;
 
-                //make sure thebucket list is correct
-                if(last !is null)
+                //make sure the bucket list is correct
+                if(last is null)
                     buckets = current;
                 else
                     last.next = current;
@@ -348,7 +361,7 @@ class ObjectsManager: TypedManager
     ubyte objectsPerBucket;
     uint fullMap; //a bitmap showing what the freeMap will look like when full
     TypeNode* allocateNode;
-    this(const TypeInfo ti, size_t objectSize)
+    this(size_t objectSize, const TypeInfo ti) nothrow
     {
         //need this in order to correctly initialize the type info
         super(ti);
@@ -357,14 +370,22 @@ class ObjectsManager: TypedManager
         objectsPerBucket = getObjectsPerBucket(objectSize);
         fullMap = getFullMap();
         auto rtInfo = cast(const(size_t)*) ti.rtInfo();
-        pointerMap = rtInfo[1];
+        if(rtInfo !is null)
+        {
+            pointerMap = rtInfo[1];
+        }
+        else
+        {
+            pointerMap = 0;
+        }
+        createNewBucket(buckets);
     }
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        mutex.lock();
+        //mutex.lock();
         //will call mutex.unlock() at the end of the scope
-        scope (exit) mutex.unlock();
+        //scope (exit) mutex.unlock();
 
         if(needsSweeping)
             sweep();
@@ -427,7 +448,7 @@ class ObjectsManager: TypedManager
         }
     }
 
-    uint getFullMap()
+    uint getFullMap() nothrow
     {
 
         final switch(objectsPerBucket)
@@ -467,7 +488,7 @@ class ObjectsManager: TypedManager
         node.bucket = newBucket;
 
         allocateNode = node;
-        //gcBuckets.insert(newBucket);
+        gcBuckets.insert(newBucket);
     }
 }
 
@@ -475,6 +496,11 @@ class ObjectsManager: TypedManager
 /**
  *  TypeManager manages the allocations for a specific type.
  */
+
+
+version(none)
+{
+
 struct TypeManagerProto
 {
     static BucketAVL gcBuckets;
@@ -744,5 +770,7 @@ struct TypeManagerProto
 
         needsSweeping = false;
     }
+
+}
 
 }

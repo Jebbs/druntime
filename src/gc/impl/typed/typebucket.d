@@ -11,6 +11,7 @@ alias BlkInfo = core.memory.GC.BlkInfo;
 import core.bitop;
 
 import gc.impl.typed.systemalloc;
+import gc.impl.typed.scan;
 
 
 extern (C)
@@ -31,7 +32,7 @@ extern (C)
  * This structure uses information about the type in order to perform some cool
  * things.
  */
-struct TypeBucket
+struct TypeBucketProto
 {
 package:
     void* memory; //a pointer to the memory used by this bucket to hold the objects
@@ -279,7 +280,7 @@ enum BucketInfo: ubyte
 }
 
 //class to get me thinking about design of different kinds of Buckets
-class Bucket
+class TypeBucket
 {
     void* memory; //a pointer to the memory used by this bucket to hold the objects
     ubyte* attributes;
@@ -289,7 +290,13 @@ class Bucket
     uint markMap; //the bitmap of all object that have been found during a collection
     ubyte numberOfObjects;
 
-    ~this()
+    ~this() nothrow
+    {
+        markMap = 0;
+        sweep();
+    }
+
+    void dtor() nothrow
     {
         markMap = 0;
         sweep();
@@ -326,6 +333,8 @@ class Bucket
      * will be updated.
      */
     abstract void sweep() nothrow;
+
+    abstract void scan(ref ScanStack scanStack, void* ptr) nothrow;
 
     /**
      * Check if this bucket is empty.
@@ -423,7 +432,7 @@ class Bucket
 }
 
 ///Bucket used in conjunction with raw memory allocations.
-class RawBucket: Bucket
+class RawBucket: TypeBucket
 {
 
     static RawBucket newBucket(size_t size, void* memory) nothrow
@@ -504,10 +513,15 @@ class RawBucket: Bucket
         if(markMap == 0)
             freeMap = 0;
     }
+
+    override void scan(ref ScanStack scanStack, void* ptr) nothrow
+    {
+        scanStack.push(ScanRange(memory, memory + objectSize, size_t.max));
+    }
 }
 
 ///Bucket used in conjumction with array allocations.
-class ArrayBucket: Bucket
+class ArrayBucket: TypeBucket
 {
     //If the object this array contains is a pointer type or not.
     bool isObjectPointerType;
@@ -646,10 +660,32 @@ class ArrayBucket: Bucket
         return *cast(size_t *)(memory);
     }
 
+    override void scan(ref ScanStack scanStack, void* ptr) nothrow
+    {
+        auto arrayPos = getArrayStart();
+        auto arrayLength = getArrayLength();
+
+        //add the set and scan conservatively since everything is a pointer anyway
+        if(isObjectPointerType)
+        {
+            scanStack.push(ScanRange(arrayPos, arrayPos + (arrayLength*arrayObjectSize),
+                           size_t.max));
+        }
+        else
+        {
+            //go over each object in the array
+            for(uint i = 0;i < arrayLength; i++, arrayPos+= arrayObjectSize)
+            {
+                //push that object into the scan stack
+                scanStack.push(ScanRange(arrayPos, arrayPos + arrayObjectSize, pointerMap));
+            }
+        }
+    }
+
 }
 
 ///Bucket used in conjumction with object allocations.
-class ObjectsBucket: Bucket
+class ObjectsBucket: TypeBucket
 {
     ///what the freeMap looks like when it is full
     uint fullMap;
@@ -731,4 +767,13 @@ class ObjectsBucket: Bucket
         if(markMap == 0)
             freeMap = 0;
     }
+
+    override void scan(ref ScanStack scanStack, void* ptr) nothrow
+    {
+
+        //get base? or assume that ptr points to the base of an object
+
+        scanStack.push(ScanRange(ptr, ptr + objectSize, pointerMap));
+    }
 }
+

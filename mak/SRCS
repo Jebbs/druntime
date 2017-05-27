@@ -304,6 +304,7 @@ SRCS=\
 	src\gc\impl\typed\bucketavl.d \
 	src\gc\impl\typed\typebucket.d \
 	src\gc\impl\typed\typemanager.d \
+	src\gc\impl\typed\scan.d \
 	\
 	src\rt\aApply.d \
 	src\rt\aApplyR.d \
