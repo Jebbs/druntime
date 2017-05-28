@@ -284,7 +284,7 @@ class TypeBucket
 {
     void* memory; //a pointer to the memory used by this bucket to hold the objects
     ubyte* attributes;
-    size_t objectSize; //size of each object
+    size_t objectSize; //size of each object or the size of the bucket if there is only one object
     size_t pointerMap; //the bitmap describing what words are pointers
     uint freeMap; //the bitmap of all free objects in this bucket
     uint markMap; //the bitmap of all object that have been found during a collection
@@ -334,7 +334,28 @@ class TypeBucket
      */
     abstract void sweep() nothrow;
 
+    /*
+     * Select the memory that will need to be scanned further.
+     *
+     * Params:
+     *  scanStack = the to scan stack.
+     *  ptr = the pointer to the object that may contain pointers
+     */
     abstract void scan(ref ScanStack scanStack, void* ptr) nothrow;
+
+    /*
+     * Get the allocated size of a pointer. If p is an interior pointer, this
+     * function returns 0.
+     */
+    size_t sizeOf(void* ptr) nothrow
+    {
+        auto pos = (ptr - memory) / objectSize;
+
+        if(ptr == memory + pos*objectSize)
+            return objectSize;
+
+        return 0;
+    }
 
     /**
      * Check if this bucket is empty.
@@ -408,25 +429,45 @@ class TypeBucket
     {
         //need to test if p points to the base or not
 
-        return attributes[(p - memory) / objectSize];
+        auto pos = (p - memory) / objectSize;
+
+        if(p == memory + pos*objectSize)
+            return attributes[pos];
+
+        return 0;
     }
 
     uint setAttr(void* p, uint mask) nothrow
     {
         //need to test if p points to the base or not
 
-        attributes[(p - memory) / objectSize] |= mask;
+        auto pos = (p - memory) / objectSize;
 
-        return attributes[(memory - p) / objectSize];
+        if(p == memory + pos*objectSize)
+        {
+            attributes[(p - memory) / objectSize] |= mask;
+
+            return attributes[(memory - p) / objectSize];
+        }
+
+        return 0;
     }
 
     uint clrAttr(void* p, uint mask) nothrow
     {
         //need to test if p points to the base or not
 
-        attributes[(p - memory) / objectSize] &= ~mask;
+        auto pos = (p - memory) / objectSize;
 
-        return attributes[(memory - p) / objectSize];
+        if(p == memory + pos*objectSize)
+        {
+
+            attributes[(p - memory) / objectSize] &= ~mask;
+
+            return attributes[(memory - p) / objectSize];
+        }
+
+        return 0;
     }
 
 }

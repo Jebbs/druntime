@@ -3,6 +3,7 @@
 module gc.impl.typed.typemanager;
 
 import core.internal.spinlock;
+import core.memory;
 
 import gc.impl.typed.systemalloc;
 import gc.impl.typed.typebucket;
@@ -20,8 +21,6 @@ class TypeManager
     }
 
     bool needsSweeping;
-
-    
 
     /// Linked list of all buckets managed for this type
     TypeNode* buckets;
@@ -50,55 +49,80 @@ class RawManager: TypeManager
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        //mutex.lock();
-        //will call mutex.unlock() at the end of the scope
-        //scope (exit) mutex.unlock();
-
-        if(needsSweeping)
-            sweep();
-
-        size_t allocSize = size;
-
-        if(bits & BlkAttr.APPENDABLE)
-            allocSize+= size >> 2;
-
-
-        if(buckets is null)
+        bool collected = false;
+        while(true)
         {
-            return allocImpl(allocSize, bits);
-        }
-        else
-        {
-            if(freeList is null)
-                return allocImpl(allocSize, bits);
+
+            if(needsSweeping)
+                sweep();
+
+            size_t allocSize = size;
+
+            if(bits & BlkAttr.APPENDABLE)
+                allocSize+= size >> 2;
 
 
-            TypeNode* last;
-            TypeNode* current = freeList;
-
-
-            for(;current != null; last = current, current = current.next)
+            if(buckets is null)
             {
-                //search through freelist to get a bucket large enough
-                if(current.bucket.objectSize >= allocSize)
-                {
-                    TypeNode* temp = current.next;
-
-                    current.next = buckets;
-
-                    buckets = current;
-
-                    if(last is null)
-                        freeList = temp;
-                    else
-                        last.next = temp;
-
-                    return buckets.bucket.alloc(bits);
-                }
+                //this should still perform a collection, even though we will
+                //need to allocate more space no matter what
+                if(AllocSystem.freeMemory < size)
+                    GC.collect();
+                return allocImpl(allocSize, bits);
             }
+            else
+            {
+                if(freeList is null)
+                {
+                    //if we don't have enough space, perform exactly one
+                    //collection and try again.
+                    if(AllocSystem.freeMemory < size && !collected)
+                    {
+                        GC.collect();
+                        collected = true;
+                        continue;
+                    }
 
-            //otherwise allocate new bucket
-            return allocImpl(allocSize, bits);
+                    return allocImpl(allocSize, bits);
+                }
+
+
+                TypeNode* last;
+                TypeNode* current = freeList;
+
+
+                for(;current != null; last = current, current = current.next)
+                {
+                    //search through freelist to get a bucket large enough
+                    if(current.bucket.objectSize >= allocSize)
+                    {
+                        TypeNode* temp = current.next;
+
+                        current.next = buckets;
+
+                        buckets = current;
+
+                        if(last is null)
+                            freeList = temp;
+                        else
+                            last.next = temp;
+
+                        return buckets.bucket.alloc(bits);
+                    }
+                }
+
+                //if we don't have enough space, perform exactly one
+                //collection and try again.
+                if(AllocSystem.freeMemory < size && !collected)
+                {
+                    GC.collect();
+                    collected = true;
+                    continue;
+                }
+
+                //otherwise allocate new bucket
+                return allocImpl(allocSize, bits);
+            }
         }
 
     }
@@ -109,6 +133,7 @@ class RawManager: TypeManager
         auto node = New!TypeNode();
         node.next = buckets; //we're going to put this bucket in the front
 
+        //mayt throw an out of memory error
         void* memory = halloc(size);
 
         //create TypeBucket
@@ -233,56 +258,82 @@ class ArrayManager: TypedManager
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        //mutex.lock();
-        //will call mutex.unlock() at the end of the scope
-        //scope (exit) mutex.unlock();
+        bool collected = false;
 
-        if(needsSweeping)
-            sweep();
-
-        //get some padding for the array
-
-        size_t sz = objectSize;
-
-        size_t padding = ((size/objectSize) >> 2) * objectSize;
-        size+=padding;
-
-        if(buckets is null)
+        while(true)
         {
-            return allocImpl(size, bits);
-        }
-        else
-        {
-            if(freeList is null)
-                return allocImpl(size, bits);
+            if(needsSweeping)
+                sweep();
 
+            //get some padding for the array
 
-            TypeNode* last;
-            TypeNode* current = freeList;
+            size_t sz = objectSize;
 
+            size_t padding = ((size/objectSize) >> 2) * objectSize;
+            size+=padding;
 
-            for(;current != null; last = current, current = current.next)
+            if(buckets is null)
             {
-                //search through freelist to get a bucket large enough
-                if(current.bucket.objectSize >= size)
-                {
-                    TypeNode* temp = current.next;
+                //this should still perform a collection, even though we will
+                //need to allocate more space no matter what
+                if(AllocSystem.freeMemory < size)
+                    GC.collect();
 
-                    current.next = buckets;
-
-                    buckets = current;
-
-                    if(last is null)
-                        freeList = temp;
-                    else
-                        last.next = temp;
-
-                    return buckets.bucket.alloc(bits);
-                }
+                return allocImpl(size, bits);
             }
+            else
+            {
+                if(freeList is null)
+                {
+                    //if we don't have enough space, perform exactly one
+                    //collection and try again.
+                    if(AllocSystem.freeMemory < size && !collected)
+                    {
+                        GC.collect();
+                        collected = true;
+                        continue;
+                    }
 
-            //otherwise allocate new bucket
-            return allocImpl(size, bits);
+                    return allocImpl(size, bits);
+                }
+
+
+                TypeNode* last;
+                TypeNode* current = freeList;
+
+
+                for(;current != null; last = current, current = current.next)
+                {
+                    //search through freelist to get a bucket large enough
+                    if(current.bucket.objectSize >= size)
+                    {
+                        TypeNode* temp = current.next;
+
+                        current.next = buckets;
+
+                        buckets = current;
+
+                        if(last is null)
+                            freeList = temp;
+                        else
+                            last.next = temp;
+
+                        return buckets.bucket.alloc(bits);
+                    }
+                }
+
+                //if we don't have enough space, perform exactly one
+                //collection and try again.
+                if(AllocSystem.freeMemory < size && !collected)
+                {
+                    GC.collect();
+                    collected = true;
+                    continue;
+                }
+
+                //otherwise allocate new bucket
+                return allocImpl(size, bits);
+            }
         }
 
     }
@@ -383,31 +434,40 @@ class ObjectsManager: TypedManager
 
     override void* alloc(size_t size, uint bits) nothrow
     {
-        //mutex.lock();
-        //will call mutex.unlock() at the end of the scope
-        //scope (exit) mutex.unlock();
+
+        bool collected = false;
+
+start:
 
         if(needsSweeping)
             sweep();
 
-        return allocImpl(bits);
-    }
-
-    void* allocImpl(uint bits) nothrow
-    {
         //make sure we have a bucket that can store new objects
         for(;allocateNode.bucket.isFull(); allocateNode = allocateNode.next)
         {
             if (allocateNode.next is null)
             {
                 //creates a new TypeNode and will assign it to allocateNode
+
+                //if we don't have enough space for a new bucket, perform
+                //exactly one collection and try to allocate the object again.
+                if(!collected &&
+                   AllocSystem.freeMemory < objectSize*objectsPerBucket)
+                {
+                    GC.collect();
+                    collected = true;
+                    goto start;
+                }
+
                 createNewBucket(allocateNode.next);
                 break;
             }
         }
 
         return allocateNode.bucket.alloc(bits);
+
     }
+
 
     override BlkInfo qalloc(size_t size, uint bits) nothrow
     {

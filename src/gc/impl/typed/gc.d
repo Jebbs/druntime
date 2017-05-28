@@ -61,6 +61,8 @@ class TypedGC : GC
     /// Array of ranges of data to search for pointers.
     Array!Range ranges;
 
+    uint disabled; //disables collections if >0
+
     /**
     * The boundaries of the heap.
     *
@@ -98,6 +100,10 @@ class TypedGC : GC
      */
     TypeManager getTypeManager(size_t size, const TypeInfo ti) nothrow
     {
+
+        if(ti is null)
+            return untypedManager;
+
         uint attempts = 0;
 
         size_t hash = ti.toHash();
@@ -280,7 +286,7 @@ class TypedGC : GC
      */
     void enable()
     {
-        //need some kind of mechanism for enabling and disabling.
+        disabled--;
     }
 
     /**
@@ -288,7 +294,7 @@ class TypedGC : GC
      */
     void disable()
     {
-        //need some kind of mechanism for enabling and disabling.
+        disabled++;
     }
 
     /**
@@ -299,7 +305,6 @@ class TypedGC : GC
      */
     void collect() nothrow
     {
-        //lock things
         //disable threads
         thread_suspendAll();
 
@@ -333,6 +338,28 @@ class TypedGC : GC
      */
     void collectNoStack() nothrow
     {
+        //disable threads
+        thread_suspendAll();
+
+        //prepare for scanning
+        prepare();
+
+        //scan through all roots
+        foreach (root; roots)
+        {
+            mark(cast(void*)&root.proot, cast(void*)(&root.proot + 1));
+        }
+
+        //scan through all ranges
+        foreach (range; ranges)
+        {
+
+            mark(range.pbot, range.ptop);
+        }
+
+        //resume threads
+        thread_processGCMarks(&isMarked);
+        thread_resumeAll();
     }
 
     /**
@@ -342,7 +369,6 @@ class TypedGC : GC
     {
         //do nothing for now
         //what can we do, honestly?
-        //think about it
     }
 
     /**
@@ -358,10 +384,12 @@ class TypedGC : GC
      */
     uint getAttr(void* p) nothrow
     {
+        auto bucket = buckets.findBucket(p);
 
-        //p should be pointing to the base of an objects
-
-        //do a check somewhere
+        if(bucket)
+        {
+            return bucket.getAttr(p);
+        }
 
         return 0;
     }
@@ -382,7 +410,13 @@ class TypedGC : GC
      */
     uint setAttr(void* p, uint mask) nothrow
     {
-        //p must point to the base of an object
+        auto bucket = buckets.findBucket(p);
+
+        if(bucket)
+        {
+            return bucket.setAttr(p, mask);
+        }
+
         return 0;
     }
 
@@ -402,6 +436,13 @@ class TypedGC : GC
      */
     uint clrAttr(void* p, uint mask) nothrow
     {
+        auto bucket = buckets.findBucket(p);
+
+        if(bucket)
+        {
+            return bucket.clrAttr(p, mask);
+        }
+
         return 0;
     }
 
@@ -425,13 +466,12 @@ class TypedGC : GC
         mutex.lock();
         scope(exit) mutex.unlock();
 
-        if(ti is null)
-        {
-            return untypedManager.alloc(size, bits);
-        }
+        if(size == 0)
+            return null;
 
         TypeManager type = getTypeManager(size, ti);
 
+        //May trigger a collection
         return type.alloc(size, bits);
     }
 
@@ -451,26 +491,13 @@ class TypedGC : GC
      */
     BlkInfo qalloc(size_t size, uint bits, const TypeInfo ti) nothrow
     {
-        BlkInfo retval;
-
-        if(ti is null)
-        {
-            auto type = untypedManager.alloc(size, bits);
-        }
+        if(size == 0)
+            return BlkInfo();
 
         TypeManager type = getTypeManager(size, ti);
 
 
         return type.qalloc(size, bits);
-
-        //auto sizey = type.allocateNode.bucket.objectSize;
-        //retval.size = sizey;
-
-
-        //retval.base = type.alloc(bits);
-
-        //retval.attr = bits;
-        //return retval;
     }
 
     /**
@@ -522,16 +549,47 @@ class TypedGC : GC
      */
     void* realloc(void* p, size_t size, uint bits, const TypeInfo ti) nothrow
     {
+        import core.stdc.string : memcpy;
 
-        //TypeBucket* typeBucket = buckets.retrieve(size, ti);
-        //
-        //p = cstdlib.realloc(p, size);
-        //
-        //if (size && p is null)
-        //onOutOfMemoryErrorNoGC();
-        //return p;
+        //find bucket
+        auto bucket = buckets.findBucket(p);
 
-        return null;
+        if(bucket is null)
+            return null;
+
+        //if size is zero we need to free
+        if(size == 0)
+            bucket.free(p);
+
+        auto blkInfo = bucket.query(p);
+
+        //make sure the pointer points to the base of this memory
+        if(blkInfo.base !is p)
+            return null;
+
+        //if we're requesting the same
+        if(size == blkInfo.size)
+        {
+            return p;
+        }
+        //if the size we're requesting fits inside the block
+        else if (size < blkInfo.size)
+        {
+            //should we perform a check here or should we assume that this
+            //won't happen for regular objects and only for arrays/raw memory?
+            bucket.objectSize = size;
+            return p;
+        }
+
+        //if we need to allocate a new block
+
+        //find manager
+        TypeManager type = getTypeManager(size, ti);
+
+        auto newPointer = type.alloc(size, bits);
+
+        //copy stuff from old memory to new memory
+        return memcpy(newPointer, p, blkInfo.size);
     }
 
     /**
@@ -552,13 +610,8 @@ class TypedGC : GC
     size_t extend(void* p, size_t minsize, size_t maxsize, const TypeInfo ti) nothrow
     {
 
-        //find p, check if extendable?
-
-        //if so, extend?
-
-        //only types that are allowed to be extendable:
-        //arrays
-        //ray data
+        //because of the way allocations currently work,
+        //extending is diabled
 
         return 0;
     }
@@ -575,7 +628,7 @@ class TypedGC : GC
      */
     size_t reserve(size_t size) nothrow
     {
-        //create some raw memory for type buckets to use
+        //create some raw memory for type buckets to use?
 
         return 0;
     }
@@ -591,6 +644,13 @@ class TypedGC : GC
      */
     void free(void* p) nothrow
     {
+        auto bucket = buckets.findBucket(p);
+
+        if(bucket)
+        {
+            return bucket.free(p);
+        }
+
     }
 
     /**
@@ -606,6 +666,13 @@ class TypedGC : GC
      */
     void* addrOf(void* p) nothrow
     {
+        auto bucket = buckets.findBucket(p);
+
+        if(bucket)
+        {
+            return bucket.addrOf(p);
+        }
+
         return null;
     }
 
@@ -621,7 +688,13 @@ class TypedGC : GC
      */
     size_t sizeOf(void* p) nothrow
     {
-        //need to check if interior pointer first
+        auto bucket = buckets.findBucket(p);
+
+        if(bucket)
+        {
+            return bucket.sizeOf(p);
+        }
+
         return 0;
     }
 
@@ -642,7 +715,7 @@ class TypedGC : GC
         auto bucket = buckets.findBucket(p);
 
         if(bucket is null)
-            return BlkInfo.init;
+            return BlkInfo();
 
         return bucket.query(p);
     }
