@@ -31,11 +31,13 @@ void main()
     void** arrayLoc = cast(void**)&coolArray;
 
     printf("array location on stack: %X\n", arrayLoc);
-    printf("array location on heap: %X\n", *arrayLoc);
     printf("array location on heap: %X\n", cast(void*)(*(&coolArray)));
 
     printf("array length: %d\n", coolArray.length);
     printf("array capacity: %d\n", coolArray.capacity);
+
+
+    printf("array size: %d\n", GC.sizeOf(&coolArray));
 
     start = MonoTime.currTime;
     auto coolerArray = new STest[12];

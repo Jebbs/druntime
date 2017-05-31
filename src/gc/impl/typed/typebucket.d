@@ -714,9 +714,17 @@ class ArrayBucket: TypeBucket
         }
         else
         {
+
+            //no pointers
+            if(pointerMap == 0)
+                return;
+
             //go over each object in the array
             for(uint i = 0;i < arrayLength; i++, arrayPos+= arrayObjectSize)
             {
+                //this needs to be fixed because large arrays are a problem!
+                size_t tempMap = pointerMap;
+
                 //push that object into the scan stack
                 scanStack.push(ScanRange(arrayPos, arrayPos + arrayObjectSize, pointerMap));
             }

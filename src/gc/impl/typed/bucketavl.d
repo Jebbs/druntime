@@ -153,7 +153,9 @@ struct BucketAVL
     TypeBucket findBucket(void* ptr) nothrow
     {
         //check if the pointer is in the boundaries of the heap memory
-        if(ptr < bottomBoundary || ptr >= topBoundary)
+        //these might not be calculated correctly as sometimes ptr is valid
+        //when ptr == topBoundary
+        if(ptr < bottomBoundary || ptr > topBoundary)
             return null;
 
         Node* current = root;
