@@ -251,7 +251,7 @@ class TypedGC : GC
         managers.next = null;
         lastManager = managers;
 
-        TypeManager.gcBuckets = buckets;
+        TypeManager.gcBuckets = &buckets;
     }
 
     ~this()

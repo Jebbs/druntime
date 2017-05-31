@@ -7,6 +7,7 @@
         { "taskName": "build",
           "command": "make",
           "args": ["-fposix.mak", "BUILD=debug"],
+          //"args": ["-fposix.mak", "unittest"],
           "windows":{
             "args": ["-fwin32.mak"]
           }

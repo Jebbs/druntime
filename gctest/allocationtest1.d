@@ -9,6 +9,18 @@ import core.time;
 void main()
 {
 
+    abstract class C
+    {
+       void func();
+       void func(int a);
+       int func(int a, int b);
+    }
+
+    alias functionTypes = typeof(__traits(getVirtualFunctions, C, "func"));
+    assert(typeid(functionTypes[0]).toString() == "void function()");
+    assert(typeid(functionTypes[1]).toString() == "void function(int)");
+    assert(typeid(functionTypes[2]).toString() == "int function(int, int)");
+
     MonoTime start = MonoTime.currTime;
 
     auto coolArray = new Test[12];

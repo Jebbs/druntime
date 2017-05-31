@@ -104,7 +104,7 @@ struct AllocSystem
         {
              //is this enough?
             //should system memory actually grow?
-            AllocSystem.systemMemory = MemoryChunk(10 * PAGE_SIZE);
+            AllocSystem.systemMemory = MemoryChunk(20 * PAGE_SIZE);
             AllocSystem.heapMemory = cast(MemoryChunk*) salloc(MemoryChunk.sizeof);
             AllocSystem.heapMemory.__ctor(2 * PAGE_SIZE); //is this enough to start?
             reservedMemory = freeMemory = 2 * PAGE_SIZE;
@@ -209,6 +209,9 @@ void* halloc(size_t size) nothrow
     //check size of allocation? Do something special if allocating a lot?
     //(a big object, a big array, a large amount of memory is reserved?)
 
+    //size_t usedMemory = AllocSystem.usedMemory;
+    //size_t freeMemory = AllocSystem.freeMemory;
+
     if (AllocSystem.currentChunk.offset + size >
         AllocSystem.currentChunk.start + AllocSystem.currentChunk.chunkSize)
     {
@@ -218,8 +221,11 @@ void* halloc(size_t size) nothrow
                     (AllocSystem.currentChunk.offset - AllocSystem.currentChunk.start);
         AllocSystem.usedMemory+=fill;
 
+        //usedMemory = AllocSystem.usedMemory;
+
         //next size should make the system be at about 40% used memory vs reserved
-        size_t numberOfPages = (AllocSystem.usedMemory >> 4)/PAGE_DIVISOR;
+        size_t numberOfPages = ((10*AllocSystem.usedMemory)>>2)/PAGE_SIZE;
+
 
         size_t newChunkSize = AllocSystem.freeMemory = numberOfPages * PAGE_SIZE;
         AllocSystem.reservedMemory += newChunkSize;

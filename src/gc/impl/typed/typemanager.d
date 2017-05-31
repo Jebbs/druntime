@@ -12,7 +12,7 @@ import gc.impl.typed.bucketavl;
 //The base class for type managers
 class TypeManager
 {
-    static BucketAVL gcBuckets;//is this ok? or should it be passed?
+    static BucketAVL* gcBuckets;//is this ok? or should it be passed?
 
     struct TypeNode
     {
@@ -175,7 +175,7 @@ class RawManager: TypeManager
                 current = current.next;
 
                 //make sure thebucket list is correct
-                if(last !is null)
+                if(last is null)
                     buckets = current;
                 else
                     last.next = current;
