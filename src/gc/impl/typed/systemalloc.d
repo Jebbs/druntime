@@ -248,31 +248,40 @@ void* halloc(size_t size) nothrow
 }
 
 
-//This function allocates a class using salloc
-//it assumes that the constructor handles all initialization
-//so that it can avoid copying the initializer
+///This function allocates a class using salloc
 T New(T, Args...)(auto ref Args args) nothrow
 if(is(T == class))
 {
     import core.stdc.string: memcpy;
+
+    //allocate some system memory with the correct class instance size
     auto ptr = salloc(__traits(classInstanceSize, T));
 
-    //this can be added back if initialization becomes a problem
+    //get the default initializer and copy it to the new memory
     auto init = typeid(T).initializer();
     memcpy(ptr, init.ptr, init.length);
 
+    //call the constructor
     (cast(T)ptr).__ctor(args);
+
+    //return the new class instance
     return cast(T)ptr;
 }
 
-//This function allocates a pointer to a struct using salloc
-
+///This function allocates a pointer to a struct using salloc
 T* New(T, Args...)(auto ref Args args) nothrow
 if(is(T == struct))
 {
+    //allocate some memory for the structure
     auto ptr = salloc(T.sizeof);
+
+    //default initialize the structure
+    *(cast(T*)ptr) = T();
+
+    //call a constructor if we have arguments
     static if(Args.length >0)
         (cast(T*)ptr).__ctor(args);
 
+    //return the new poiter to a struct
     return cast(T*)ptr;
 }
