@@ -167,7 +167,7 @@ extern (C)
         return instance.reserve( sz );
     }
 
-    void gc_free( void* p ) nothrow @nogc
+    void gc_free( void* p ) nothrow
     {
         return instance.free( p );
     }
