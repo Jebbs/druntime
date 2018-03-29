@@ -154,7 +154,7 @@ public:
         freeMap &= ~(1 << pos);
     }
 
-    void* addrOf(void* p) nothrow
+    void* addrOf(void* p) nothrow @nogc
     {
         //assume that p is one of these objects
         return memory + ((p - memory) / objectSize) * objectSize;
@@ -242,7 +242,7 @@ public:
      * Checks to see if a pointer to something points to an object in this
      * bucket.
      */
-    bool containsObject(void* p) nothrow
+    bool containsObject(void* p) nothrow @nogc
     {
         if (p >= memory && p < memory + objectSize * numberOfObjects)
             return true;
@@ -347,7 +347,7 @@ class TypeBucket
      * Get the allocated size of a pointer. If p is an interior pointer, this
      * function returns 0.
      */
-    size_t sizeOf(void* ptr) nothrow
+    size_t sizeOf(void* ptr) nothrow @nogc
     {
         auto pos = (ptr - memory) / objectSize;
 
@@ -368,7 +368,7 @@ class TypeBucket
     /**
      * Get the base address of the block containing p.
      */
-    void* addrOf(void* p) nothrow
+    void* addrOf(void* p) nothrow @nogc
     {
         //assume that p is one of these objects
         return memory + ((p - memory) / objectSize) * objectSize;
@@ -417,7 +417,7 @@ class TypeBucket
      * Checks to see if a pointer to something points to an object in this
      * bucket.
      */
-    bool containsObject(void* p) nothrow
+    bool containsObject(void* p) nothrow @nogc
     {
         if (p >= memory && p < memory + objectSize * numberOfObjects)
             return true;

@@ -150,7 +150,7 @@ struct BucketAVL
     }
 
     ///Search the Binary tree for the bucket containing ptr
-    TypeBucket findBucket(void* ptr) nothrow
+    TypeBucket findBucket(void* ptr) nothrow @nogc
     {
         //check if the pointer is in the boundaries of the heap memory
         //these might not be calculated correctly as sometimes ptr is valid
