@@ -16,7 +16,7 @@ struct Config
 {
     bool disable;            // start disabled
     ubyte profile;           // enable profiling with summary when terminating program
-    string gc = "typed"; // select gc implementation conservative|manual
+    string gc = "type_mt"; // select gc implementation conservative|manual
     //string gc = "conservative";
 
     size_t initReserve;      // initial reserve (MB)

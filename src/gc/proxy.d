@@ -17,6 +17,8 @@ import gc.impl.conservative.gc;
 import gc.impl.manual.gc;
 import gc.impl.proto.gc;
 import gc.impl.typed.gc;
+import gc.impl.type.gc;
+import gc.impl.type_mt.gc;
 import gc.config;
 import gc.gcinterface;
 
@@ -47,6 +49,8 @@ extern (C)
             ManualGC.initialize(instance);
             ConservativeGC.initialize(instance);
             TypedGC.initialize(instance);
+            TypeGC.initialize(instance);
+            TypeGC_MT.initialize(instance);
 
             if (instance is protoInstance)
             {
@@ -99,6 +103,8 @@ extern (C)
             ManualGC.finalize(instance);
             ConservativeGC.finalize(instance);
             TypedGC.finalize(instance);
+            TypeGC.finalize(instance);
+            TypeGC_MT.finalize(instance);
         }
     }
 

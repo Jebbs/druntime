@@ -634,8 +634,8 @@ class ArrayBucket: TypeBucket
             return;
 
         //check if pointer type or type doesn't need finalizer
-        if(isObjectPointerType || ~(*attributes) & BlkAttr.FINALIZE ||
-                ~(*attributes) & BlkAttr.STRUCTFINAL)
+        if(isObjectPointerType || ~cast(int)(*attributes) & BlkAttr.FINALIZE ||
+                ~cast(int)(*attributes) & BlkAttr.STRUCTFINAL)
         {
             //don't worry about freeing individual objects
 

@@ -19,6 +19,7 @@ SRCS=\
 	src\core\internal\abort.d \
 	src\core\internal\arrayop.d \
 	src\core\internal\convert.d \
+	src\core\internal\gcthread.d \
 	src\core\internal\hash.d \
 	src\core\internal\parseoptions.d \
 	src\core\internal\spinlock.d \
@@ -299,6 +300,12 @@ SRCS=\
 	src\gc\impl\conservative\gc.d \
 	src\gc\impl\manual\gc.d \
 	src\gc\impl\proto\gc.d \
+	src\gc\impl\type\gc.d \
+	src\gc\impl\type\memory.d \
+	src\gc\impl\type\typehash.d \
+	src\gc\impl\type\typemanager.d \
+	src\gc\impl\type\scan.d \
+	src\gc\impl\type_mt\gc.d \
 	src\gc\impl\typed\gc.d \
 	src\gc\impl\typed\systemalloc.d \
 	src\gc\impl\typed\bucketavl.d \

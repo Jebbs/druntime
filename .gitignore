@@ -11,5 +11,5 @@ trace.log
 /errno_c*.obj
 /msvc*.obj
 gctest/*
-!gctest/allocationtest1.d
+!gctest/allocationtest.d
 make

@@ -129,7 +129,7 @@ private
         // to allow compilation of this module without access to the rt package,
         //  make these functions available from rt.lifetime
         void rt_finalizeFromGC(void* p, size_t size, uint attr) nothrow;
-        int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow;
+        int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow @nogc;
 
         // Declared as an extern instead of importing core.exception
         // to avoid inlining - see issue 13725.

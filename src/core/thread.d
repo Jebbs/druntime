@@ -2511,6 +2511,10 @@ private __gshared uint suspendDepth = 0;
  */
 private bool suspend( Thread t ) nothrow
 {
+
+    if(t is null)
+        return false;
+
     Duration waittime = dur!"usecs"(10);
  Lagain:
     if (!t.isRunning)
@@ -2773,6 +2777,10 @@ extern (C) void thread_suspendAll() nothrow
  */
 private void resume( Thread t ) nothrow
 {
+
+    if(t is null)
+        return;
+
     version( Windows )
     {
         if( t.m_addr != GetCurrentThreadId() && ResumeThread( t.m_hndl ) == 0xFFFFFFFF )
@@ -2891,7 +2899,7 @@ alias ScanAllThreadsTypeFn = void delegate(ScanType, void*, void*) nothrow; /// 
 extern (C) void thread_scanAllType( scope ScanAllThreadsTypeFn scan ) nothrow
 in
 {
-    assert( suspendDepth > 0 );
+    //assert( suspendDepth > 0 );
 }
 do
 {
@@ -2901,13 +2909,14 @@ do
 
 private void scanAllTypeImpl( scope ScanAllThreadsTypeFn scan, void* curStackTop ) nothrow
 {
+
     Thread  thisThread  = null;
     void*   oldStackTop = null;
 
     if( Thread.sm_tbeg )
     {
         thisThread  = Thread.getThis();
-        if( !thisThread.m_lock )
+        if( thisThread !is null && !thisThread.m_lock )
         {
             oldStackTop = thisThread.m_curr.tstack;
             thisThread.m_curr.tstack = curStackTop;
@@ -2918,12 +2927,13 @@ private void scanAllTypeImpl( scope ScanAllThreadsTypeFn scan, void* curStackTop
     {
         if( Thread.sm_tbeg )
         {
-            if( !thisThread.m_lock )
+            if( thisThread !is null && !thisThread.m_lock )
             {
                 thisThread.m_curr.tstack = oldStackTop;
             }
         }
     }
+
 
     // NOTE: Synchronizing on Thread.slock is not needed because this
     //       function may only be called after all other threads have

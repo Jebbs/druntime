@@ -1262,7 +1262,7 @@ extern (C) CollectHandler rt_getCollectHandler()
 /**
  *
  */
-extern (C) int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow
+extern (C) int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void[] segment) nothrow @nogc
 {
     if (attr & BlkAttr.STRUCTFINAL)
     {
@@ -1287,7 +1287,7 @@ extern (C) int rt_hasFinalizerInSegment(void* p, size_t size, uint attr, in void
     return false;
 }
 
-int hasStructFinalizerInSegment(void* p, size_t size, in void[] segment) nothrow
+int hasStructFinalizerInSegment(void* p, size_t size, in void[] segment) nothrow @nogc
 {
     if(!p)
         return false;
@@ -1296,7 +1296,7 @@ int hasStructFinalizerInSegment(void* p, size_t size, in void[] segment) nothrow
     return cast(size_t)(cast(void*)ti.xdtor - segment.ptr) < segment.length;
 }
 
-int hasArrayFinalizerInSegment(void* p, size_t size, in void[] segment) nothrow
+int hasArrayFinalizerInSegment(void* p, size_t size, in void[] segment) nothrow @nogc
 {
     if(!p)
         return false;
@@ -1424,7 +1424,7 @@ extern (C) void rt_finalize(void* p, bool det = true)
     rt_finalize2(p, det, true);
 }
 
-extern (C) void rt_finalizeFromGC(void* p, size_t size, uint attr)
+extern (C) void rt_finalizeFromGC(void* p, size_t size, uint attr) nothrow
 {
     // to verify: reset memory necessary?
     if (!(attr & BlkAttr.STRUCTFINAL))
