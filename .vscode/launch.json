@@ -8,7 +8,13 @@
             "name": "Debug",
             "type": "gdb",
             "request": "launch",
+            /*"debugger_args": [
+                "handle SIGUSR1 nostop",
+                "handle SIGUSR2 nostop"
+            ],*/
             "target": "${workspaceRoot}/gctest/test",
+            //"target": "${workspaceRoot}/generated/linux/debug/64/unittest/test_runner",
+            //"arguments": "core.memory",
             "cwd": "${workspaceRoot}"
         }
     ]

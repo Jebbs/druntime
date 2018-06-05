@@ -73,9 +73,6 @@ class TypeGC_MT : TypeGC
         if (config.gc != "type_mt")
             return;
 
-        allocator.initialize();
-        TypeManager.allocator = &allocator;
-
         auto p = cstdlib.malloc(__traits(classInstanceSize, TypeGC_MT));
         if (!p)
             onOutOfMemoryErrorNoGC();
@@ -147,9 +144,7 @@ class TypeGC_MT : TypeGC
 
         collectThread.create(&collectFunc);
     }
-    
 
-    
 
     /**
      * Begins a full collection while ignoring all stack segments for roots.
@@ -215,7 +210,7 @@ class TypeGC_MT : TypeGC
         {
             ScanRange range = scanStack.pop();
 
-            printf("Scanning from %X to %X\n", range.pbot, range.ptop);
+            //printf("Scanning from %X to %X\n", range.pbot, range.ptop);
 
             foreach(void* ptr; range)
             {
@@ -327,7 +322,7 @@ extern(C) void* collectFunc(void*) nothrow
         thread_processGCMarks(&(collector.isMarked));
         thread_resumeAll();
 
-        //get outa here, garbage!
+        //get outta here, garbage!
         collector.sweep();
 
         collector.mutex.lock();

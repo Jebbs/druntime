@@ -6,13 +6,94 @@ import core.memory;
 
 import core.time;
 
+import core.thread;
+
 void main()
 {
 
+    //test 1
+    {
+    auto thr = Thread.getThis();
+    immutable prio = thr.priority;
+    scope (exit) thr.priority = prio;
 
-    for(int i = 0; i < 1_000; i++)
+    assert(prio == Thread.PRIORITY_DEFAULT);
+    assert(prio >= Thread.PRIORITY_MIN && prio <= Thread.PRIORITY_MAX);
+    thr.priority = Thread.PRIORITY_MIN;
+    assert(thr.priority == Thread.PRIORITY_MIN);
+    thr.priority = Thread.PRIORITY_MAX;
+    assert(thr.priority == Thread.PRIORITY_MAX);
+    }
+
+    //test 2
+    {
+    import core.sync.semaphore;
+
+    auto thr = new Thread({});
+    thr.start();
+    Thread.sleep(1.msecs);       // wait a little so the thread likely has finished
+    thr.priority = Thread.PRIORITY_MAX; // setting priority doesn't cause error
+    auto prio = thr.priority;    // getting priority doesn't cause error
+    assert(prio >= Thread.PRIORITY_MIN && prio <= Thread.PRIORITY_MAX);
+    }
+
+    //test 3
+    {
+        auto t1 = new Thread({
+            foreach (_; 0 .. 20)
+                Thread.getAll;
+        }).start;
+        auto t2 = new Thread({
+            foreach (_; 0 .. 20)
+                GC.collect;
+        }).start;
+        t1.join();
+        t2.join();
+    }
+
+
+    /*
+    //Static array slice: no capacity
+    int[4] sarray = [1, 2, 3, 4];
+    int[]  slice  = sarray[];
+    assert(sarray.capacity == 0);
+    //Appending to slice will reallocate to a new array
+    slice ~= 5;
+    assert(slice.capacity >= 5);
+
+    auto arr = new int[5];
+    auto sizey = GC.sizeOf(arr.ptr);
+
+    //Dynamic array slices
+    int[] a = [1, 2, 3, 4];
+    auto sz = GC.sizeOf(a.ptr);
+    int[] b = a[1 .. $];
+    int[] c = a[1 .. $ - 1];
+
+    //auto sz = GC.sizeOf(a.ptr);
+
+    printf("array size: %d\n", a.length);
+    printf("array capacity: %d\n", a.capacity);
+    printf("array memory size: %d\n", GC.sizeOf(a.ptr));
+
+
+    debug(SENTINEL) {} else // non-zero capacity very much depends on the array and GC implementation
+    {
+        assert(a.capacity != 0);
+        assert(a.capacity == b.capacity + 1); //both a and b share the same tail
+    }
+    assert(c.capacity == 0);              //an append to c must relocate c.
+    */
+    /*
+    for(int i = 0; i < 100000; i++)
+    {
+        if(i == 1024)
+        {
+            int breaker = 0;
+        }
         auto intPtr = new int();
-
+    }
+    */
     /*
 
     auto start = MonoTime.currTime().ticks;

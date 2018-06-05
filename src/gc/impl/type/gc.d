@@ -71,9 +71,6 @@ class TypeGC : GC
         if (config.gc != "type")
             return;
 
-        allocator.initialize();
-        TypeManager.allocator = &allocator;
-
         auto p = cstdlib.malloc(__traits(classInstanceSize, TypeGC));
         if (!p)
             onOutOfMemoryErrorNoGC();
@@ -119,6 +116,9 @@ class TypeGC : GC
     this()
     {
         import core.stdc.string: memset;
+
+        allocator.initialize();
+        TypeManager.allocator = &allocator;
 
         typeHash.initialize();
 
@@ -413,6 +413,9 @@ class TypeGC : GC
     void* realloc(void* p, size_t size, uint bits, const TypeInfo ti) nothrow
     {
         import core.stdc.string : memcpy;
+
+        if (p is null)
+            return malloc(size, bits, ti);
 
         auto manager = typeHash[allocator.typeLookup(p)];
 
@@ -746,7 +749,7 @@ class TypeGC : GC
         {
             ScanRange range = scanStack.pop();
 
-            printf("Scanning from %X to %X\n", range.pbot, range.ptop);
+            //printf("Scanning from %X to %X\n", range.pbot, range.ptop);
 
             foreach(void* ptr; range)
             {

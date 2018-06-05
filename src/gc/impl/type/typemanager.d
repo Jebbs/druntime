@@ -21,21 +21,19 @@ extern(C) void rt_finalizeFromGC(void* p, size_t size, uint attr) nothrow;
 //used for slow gorwing arrays (expands one page at a time)
 struct Array(T)
 {
-    void* items;
-    size_t itemPadding;
+    T* items;
     uint pageCount;
     uint itemCount;
 
     @property uint capacity() const @nogc
     {
-        return pageCount*PAGE_SIZE/(T.sizeof+itemPadding);
+        return pageCount*PAGE_SIZE/T.sizeof;
     }
 
-    void init(size_t padding = 0) nothrow @nogc
+    void init() nothrow @nogc
     {
         pageCount = 1;
-        items = os_mem_map(PAGE_SIZE);
-        itemPadding = padding;
+        items = cast(T*)os_mem_map(PAGE_SIZE);
     }
 
     ~this()
@@ -51,8 +49,8 @@ struct Array(T)
         if(itemCount > capacity)
         {
             pageCount++;
-            auto newMem = os_mem_map(pageCount*PAGE_SIZE);
-            cstdlib.memcpy(newMem, items, (itemCount-1)*(T.sizeof+itemPadding));
+            auto newMem = cast(T*)os_mem_map(pageCount*PAGE_SIZE);
+            cstdlib.memcpy(newMem, items, (itemCount-1)*T.sizeof);
             os_mem_unmap(items, (pageCount-1)*PAGE_SIZE);
             items = newMem;
         }
@@ -62,7 +60,7 @@ struct Array(T)
 
     ref T opIndex(size_t index)  nothrow @nogc
     {
-        return *(cast(T*)(items+index*(T.sizeof+itemPadding)));
+        return items[index];
     }
 
 }
@@ -661,10 +659,9 @@ class RawManager: TypeManager
                     sizeBuckets[sizeIndex] = nextBucket;
                     */
                 }
-                else
-                {
-                    sizeBuckets[sizeIndex] = buckets[bucketIndex].nextBucketID;
-                }
+
+                sizeBuckets[sizeIndex] = buckets[bucketIndex].nextBucketID;
+
             }
 
             return allocatedMemory;
@@ -706,6 +703,15 @@ class RawManager: TypeManager
         }
 
         auto pageIndex = blocks[currentBlock].allocPages(pageCount);
+
+        //if the allocation failed
+        if(pageIndex < 0)
+        {
+            //get another block and allocate from that instead
+            addBlock();
+            pageIndex = blocks[currentBlock].allocPages(pageCount);
+        }
+
         buckets[bucketIndex] = Bucket(blocks[currentBlock].pageAddress(pageIndex),
                                         blockSize, bucketIndex);
         for(int i = 0; i < pageCount; ++i)
@@ -1088,6 +1094,13 @@ class ArrayManager: TypeManager
 
         void* alloc(ubyte bits) nothrow
         {
+
+            if(freeMap == 0)
+            {
+                int breaker = 0;
+                return null;
+            }
+
             auto pos = bsf(freeMap);
 
             //set the attributes, remove the free slot, and mark it as found
@@ -1349,6 +1362,11 @@ class ArrayManager: TypeManager
     {
          auto bucketIndex = buckets.addItem();
          auto pageIndex = blocks[currentBlock].allocPage();
+         if(pageIndex < 0)
+         {
+             addBlock();
+             pageIndex = blocks[currentBlock].allocPage();
+         }
          buckets[bucketIndex] = Bucket(blocks[currentBlock].pageAddress(pageIndex),
                                         size, bucketIndex);
 
@@ -1400,6 +1418,18 @@ class ArrayManager: TypeManager
         {
             auto allocatedMemory = buckets[bucketIndex].alloc(bits);
 
+            //why is this happening?!
+            while(allocatedMemory is null)
+            {
+                sizeBuckets[sizeIndex] = buckets[bucketIndex].nextBucketID;
+                bucketIndex = sizeBuckets[sizeIndex];
+
+                allocatedMemory = buckets[bucketIndex].alloc(bits);
+
+                int breaker = 0;
+            }
+
+
             //if the bucket became full, have another ready for next allocation
             if(buckets[bucketIndex].freeMap == 0)
             {
@@ -1414,10 +1444,8 @@ class ArrayManager: TypeManager
                     sizeBuckets[sizeIndex] = nextBucket;
                     */
                 }
-                else
-                {
-                    sizeBuckets[sizeIndex] = buckets[bucketIndex].nextBucketID;
-                }
+
+                sizeBuckets[sizeIndex] = buckets[bucketIndex].nextBucketID;
             }
             return allocatedMemory;
         }
@@ -1566,6 +1594,8 @@ class ArrayManager: TypeManager
     override void _sweep() nothrow
     {
         auto count = buckets.itemCount;
+        sizeBuckets = [-1,-1,-1,-1,-1];
+        freeList = -1;
 
         for(int i = 0; i < count; ++i)
         {
@@ -1590,12 +1620,8 @@ class ArrayManager: TypeManager
                 int sizeIndex = getSizeClass(bucket.blockSize);
                 auto bucketIndex = sizeBuckets[sizeIndex];
 
-                //set this buckt to be the next one we allocate from (if not already)
-                if(i != bucketIndex)
-                {
-                    bucket.nextBucketID = bucketIndex;
-                    sizeBuckets[sizeIndex] = i;
-                }
+                bucket.nextBucketID = bucketIndex;
+                sizeBuckets[sizeIndex] = i;
             }
         }
 
@@ -1810,16 +1836,15 @@ class ObjectManager: TypeManager
     struct Bucket
     {
         //variable size array for attributes
-        ubyte* attributes;
+        ubyte[32] attributes;
         uint freeMap;
         uint markMap;
         void* memory;
         size_t objectSize;
         BucketIndex nextBucket;
 
-        this(void* mem, size_t oSize, uint fmap, void* arrayLoc) nothrow @nogc
+        this(void* mem, size_t oSize, uint fmap) nothrow @nogc
         {
-            attributes = cast(ubyte*)arrayLoc;
             memory = mem;
             objectSize = oSize;
             freeMap = fmap;
@@ -1827,6 +1852,16 @@ class ObjectManager: TypeManager
 
         void* alloc(ubyte bits) nothrow
         {
+            import core.exception;
+
+            //something happened, and we don't actually have space
+            if(freeMap == 0)
+            {
+                int breaker = 0;
+                return null;
+            }
+
+
             auto pos = bsf(freeMap);
 
             //set the attributes, remove the free slot, and mark it as found
@@ -2008,7 +2043,7 @@ class ObjectManager: TypeManager
         this(void* blockAddress, ubyte objectsPerBucket) nothrow @nogc
         {
             block = BlockManager(blockAddress);
-            buckets.init(objectsPerBucket);
+            buckets.init();
         }
     }
 
@@ -2082,16 +2117,28 @@ class ObjectManager: TypeManager
         {
             //assume won't happen for now
             int reallybad = 0;
+
+            addBlock();
+            block = &(blocks[currentBlock]);
+
+            //smallish objects
+            if(objectSize <= PAGE_SIZE)
+            {
+                pageIndex = block.block.allocPage();
+            }
+            else//not smallish objects at all
+            {
+                auto pages = cast(int)(objectSize/PAGE_SIZE + ((objectSize%PAGE_SIZE)?1:0));
+                pageIndex = block.block.allocPages(pages);
+            }
         }
 
         auto bucketAddress = block.block.pageAddress(pageIndex);
 
         //allocate the first bucket
         auto bucketIndex = block.buckets.addItem();
-        void* arrayPos = &(block.buckets[bucketIndex]) + Bucket.sizeof;
 
-        block.buckets[bucketIndex] = Bucket(bucketAddress,
-                                    objectSize, freeMap, arrayPos);
+        block.buckets[bucketIndex] = Bucket(bucketAddress, objectSize, freeMap);
 
 
         //set this bucket to be the current one
@@ -2103,13 +2150,10 @@ class ObjectManager: TypeManager
             auto lastBucket = bucketIndex;
             bucketIndex = block.buckets.addItem();
 
+            auto szOff = objectSize*objectsPerBucket;
+
             bucketAddress+= objectSize*objectsPerBucket;
-
-            arrayPos = &(block.buckets[bucketIndex]) + Bucket.sizeof;
-            //arrayPos+=Bucket.sizeof;
-
-            block.buckets[bucketIndex] = Bucket(bucketAddress,
-                                    objectSize, freeMap, arrayPos);
+            block.buckets[bucketIndex] = Bucket(bucketAddress,objectSize, freeMap);
 
             block.buckets[bucketIndex].nextBucket = freeList;
             freeList = BucketIndex(currentBlock, bucketIndex);
@@ -2128,10 +2172,16 @@ class ObjectManager: TypeManager
 
     override void* _alloc(size_t size, ubyte bits) nothrow
     {
+
+        void* allocatedMemory = null;
+
         if(currentBucket != BucketIndex())
         {
-            auto bucket = &(blocks[currentBucket.block].buckets[currentBucket.bucket]);
-            void* allocatedMemory = bucket.alloc(bits);
+
+            auto block = &(blocks[currentBucket.block]);
+
+            auto bucket = &(block.buckets[currentBucket.bucket]);
+            allocatedMemory = bucket.alloc(bits);
 
             if(bucket.freeMap == 0)
             {
@@ -2147,9 +2197,15 @@ class ObjectManager: TypeManager
             return allocatedMemory;
         }
 
-        //otherwise we need to add a bucket for this allocation
-        addBuckets();
-        return blocks[currentBucket.block].buckets[currentBucket.bucket].alloc(bits);
+        while(allocatedMemory is null)
+        {
+            //otherwise we need to add a bucket for this allocation
+            addBuckets();
+            auto flist = freeList;
+            allocatedMemory = blocks[currentBucket.block].buckets[currentBucket.bucket].alloc(bits);
+        }
+
+        return allocatedMemory;
     }
 
     override void* _realloc(void* p, size_t size, ubyte bits) nothrow
@@ -2275,12 +2331,16 @@ class ObjectManager: TypeManager
 
         auto ti = info;
 
+        freeList = BucketIndex.None;
+        currentBucket = BucketIndex.None;
+
+
         auto blockCount = blocks.itemCount;
-        for(int i = 0; i < blockCount; ++i)
+        for(int i = blockCount-1; i > -1; --i)
         {
             auto block = &blocks[i];
             auto bucketCount = block.buckets.itemCount;
-            for(int j = 0; j < bucketCount; ++j)
+            for(int j = bucketCount-1; j > -1; --j)
             {
                 auto bucket = &(block.buckets[j]);
                 bucket.sweep();
@@ -2298,12 +2358,8 @@ class ObjectManager: TypeManager
                 }
                 else if(bucket.freeMap)//has a mixture of free and empty spots
                 {
-                    //set this buckt to be the next one we allocate from (if not already)
-                    if(currentBucket != bucketIndex)
-                    {
-                        bucket.nextBucket = bucketIndex;
-                        currentBucket = bucketIndex;
-                    }
+                    bucket.nextBucket = currentBucket;
+                    currentBucket = bucketIndex;
                 }
 
             }

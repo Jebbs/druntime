@@ -28,6 +28,10 @@ shared(int) MAX_GB = 16; //Max size in GB the heap could ever be, should be conf
  */
 struct GCAllocator
 {
+
+    // chekcing something while debugging
+    bool initialized = false;
+
     //allow for a variable number of GB (configurable)
     MemoryChunk* gcMemory;
     uint chunkCount;
@@ -60,6 +64,8 @@ struct GCAllocator
         chunkCount = 1;
 
         initializeChunk(gcMemory[currentChunk]);
+
+        initialized = true;
     }
 
     /**
@@ -70,6 +76,8 @@ struct GCAllocator
     {
         mutex.lock();
         scope(exit) mutex.unlock();
+
+        auto initi = initialized;
 
         void* blockAddress = gcMemory[currentChunk].allocBlock(typeID);
 
@@ -125,6 +133,8 @@ struct GCAllocator
     {
         mutex.lock();
         scope(exit) mutex.unlock();
+
+        auto initi = this.initialized;
 
         for(int i = 0; i < chunkCount; ++i)
         {
@@ -236,8 +246,8 @@ struct MemoryChunk
 
 unittest
 {
-    import std.stdio;
-    writeln("Unittest for memory.d");
+    import core.stdc.stdio;
+    //printf("Unittest for memory.d\n");
 
     GCAllocator mem;
     mem.initialize();
